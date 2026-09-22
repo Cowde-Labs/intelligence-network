@@ -21,7 +21,11 @@ jobs:
       - name: Format
         run: cargo fmt --all -- --check
       - name: Tests
-        run: cargo test --workspace
+        # The integration suite launches real authenticated nodes and many
+        # independent QUIC topologies. Serialize test cases so runner CPU and
+        # memory pressure does not turn bounded protocol timeouts into false
+        # negatives.
+        run: cargo test --workspace -- --test-threads=1
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Protocol fuzz smoke

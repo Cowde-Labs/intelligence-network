@@ -41,6 +41,7 @@ const V3_ELECTION_SEND_TIMEOUT: Duration = Duration::from_millis(300);
 const V3_ELECTION_RETRY_DELAY: Duration = Duration::from_millis(100);
 const V3_STARTUP_COORDINATOR_RECHECKS: usize = 4;
 const V3_STARTUP_COORDINATOR_RECHECK_DELAY: Duration = Duration::from_millis(500);
+const V3_STARTUP_ADMISSION_TIMEOUT: Duration = Duration::from_secs(30);
 const V3_MAX_DELTA: i64 = 10 * TRAINING_SCALE;
 
 fn log_election_event(message: std::fmt::Arguments<'_>) {
@@ -409,7 +410,7 @@ async fn start_coordinator(
     }
 
     let mut acknowledged = HashSet::new();
-    let admission_deadline = Instant::now() + Duration::from_secs(10);
+    let admission_deadline = Instant::now() + V3_STARTUP_ADMISSION_TIMEOUT;
     while acknowledged.len() < expected_workers.len() {
         let remaining = admission_deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {

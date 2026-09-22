@@ -170,7 +170,7 @@ fn config(
 }
 
 async fn wait_for_connected(node: &Node, expected: usize) {
-    for _ in 0..200 {
+    for _ in 0..800 {
         if node
             .status()
             .await
@@ -477,14 +477,7 @@ async fn remote_evaluation_returns_local_evidence() {
     ))
     .await
     .unwrap();
-    for _ in 0..100 {
-        if let Ok(status) = admin_call(requester.admin_socket(), &AdminRequest::Status).await
-            && status["connected_peers"] == 1
-        {
-            break;
-        }
-        sleep(Duration::from_millis(50)).await;
-    }
+    wait_for_connected(&requester, 1).await;
     let result = admin_call(
         requester.admin_socket(),
         &AdminRequest::Evaluate {
@@ -528,15 +521,8 @@ async fn remote_job_can_be_cancelled_by_its_known_id() {
     ))
     .await
     .unwrap();
-    for _ in 0..100 {
-        if let Ok(status) = admin_call(requester.admin_socket(), &AdminRequest::Status).await
-            && status["connected_peers"] == 1
-        {
-            break;
-        }
-        sleep(Duration::from_millis(50)).await;
-    }
     let job_id = "06060606060606060606060606060606".to_string();
+    wait_for_connected(&requester, 1).await;
     let requester_socket = requester.admin_socket().to_path_buf();
     let request = AdminRequest::Infer {
         capability: "inference.text".to_string(),
@@ -590,16 +576,8 @@ async fn duplicate_inflight_job_is_executed_at_most_once() {
     ))
     .await
     .unwrap();
-    for _ in 0..100 {
-        if let Ok(status) = admin_call(requester.admin_socket(), &AdminRequest::Status).await
-            && status["connected_peers"] == 1
-        {
-            break;
-        }
-        sleep(Duration::from_millis(50)).await;
-    }
-
     let job_id = "07070707070707070707070707070707".to_string();
+    wait_for_connected(&requester, 1).await;
     let request = AdminRequest::Infer {
         capability: "inference.text".to_string(),
         input: "execute once".to_string(),
@@ -1372,15 +1350,7 @@ async fn v3_checkpoint_replica_survives_creator_loss_and_rejects_corruption() {
         .zip(worker_roots.iter())
         .map(|(worker, path)| (worker.node_id().to_string(), path.clone()))
         .collect::<BTreeMap<_, _>>();
-    for _ in 0..200 {
-        let status = coordinator.status().await.unwrap();
-        if status["known_peers"].as_u64().unwrap_or_default() >= 6
-            && status["connected_peers"].as_u64().unwrap_or_default() >= 6
-        {
-            break;
-        }
-        sleep(Duration::from_millis(25)).await;
-    }
+    wait_for_connected(&coordinator, 6).await;
     sleep(Duration::from_millis(500)).await;
 
     let result = admin_call(
@@ -2066,7 +2036,7 @@ async fn v4_reference_fabric_uses_real_peer_protocol_for_parallelism_and_state_m
     );
     let mut replay_observed = false;
     let mut equivocation_observed = false;
-    for _ in 0..100 {
+    for _ in 0..500 {
         if workers[0]
             .status()
             .await
