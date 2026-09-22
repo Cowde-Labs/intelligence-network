@@ -1,0 +1,50 @@
+[package]
+name = "intelligence-protocol-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+intelligence-protocol = { path = "../crates/protocol" }
+postcard = { version = "1.1", default-features = false, features = ["alloc"] }
+
+[[bin]]
+name = "decode_frame"
+path = "fuzz_targets/decode_frame.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "decode_v2_records"
+path = "fuzz_targets/decode_v2_records.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "decode_v3_training"
+path = "fuzz_targets/decode_v3_training.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "decode_v4_training"
+path = "fuzz_targets/decode_v4_training.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "decode_v5_compute"
+path = "fuzz_targets/decode_v5_compute.rs"
+test = false
+doc = false
+bench = false
+
+[workspace]

@@ -1,0 +1,25 @@
+[package]
+name = "intelligence-intelligence"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[features]
+default = ["cpu"]
+cpu = []
+cuda = []
+rocm = []
+metal = []
+
+[dependencies]
+blake3.workspace = true
+ed25519-dalek.workspace = true
+intelligence-protocol = { path = "../protocol" }
+intelligence-runtime = { path = "../runtime" }
+intelligence-storage = { path = "../storage" }
+postcard.workspace = true
+rand.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true

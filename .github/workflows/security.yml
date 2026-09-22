@@ -1,0 +1,31 @@
+name: security
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 3 * * 1"
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TARGET_DIR: .cache/rust-target
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Install pinned audit tools
+        run: |
+          cargo install cargo-deny --version 0.20.2 --locked
+          cargo install cargo-audit --version 0.22.2 --locked
+      - name: Dependency policy
+        run: cargo deny check
+      - name: RustSec audit
+        run: cargo audit
+      - name: Protocol fuzz target compilation
+        run: cargo check --manifest-path fuzz/Cargo.toml --bin decode_frame --bin decode_v2_records --bin decode_v3_training --bin decode_v4_training
+      - name: Extended stable decoder campaign
+        run: ./scripts/protocol-fuzz-extended.sh

@@ -1,0 +1,38 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TARGET_DIR: .cache/rust-target
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Toolchain
+        run: rustc --version && cargo --version
+      - name: Format
+        run: cargo fmt --all -- --check
+      - name: Tests
+        run: cargo test --workspace
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Protocol fuzz smoke
+        run: cargo test -p intelligence-protocol --test fuzz_smoke
+      - name: V2 scale emulator smoke
+        run: cargo run -p intelligence-emulator -- --nodes 1000 --sybil-ratio 0.25 --lookups 100 --workers 16 --training-steps 8 --json > /tmp/intelligence-v2-emulator.json
+      - name: V4 fabric emulator smoke
+        run: cargo run -p intelligence-emulator -- --nodes 10000 --sybil-ratio 0.25 --churn-percent 30 --lookups 100 --workers 512 --training-steps 8 --json > /tmp/intelligence-v4-emulator.json
+      - name: V4 real-process reference path
+        run: cargo test -p intelligence-node --test end_to_end v4_reference_fabric_uses_real_peer_protocol_for_parallelism_and_state_movement -- --test-threads=1
+      - name: Architecture scan
+        run: ./scripts/banned-architecture-check.sh
+      - name: Release build
+        run: INTELLIGENCE_COMMIT="${GITHUB_SHA}" ./scripts/release.sh x86_64-unknown-linux-gnu ci-dist

@@ -1,0 +1,23 @@
+[Unit]
+Description=Intelligence Network node
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=intelligence-network
+Group=intelligence-network
+ExecStart=/usr/local/bin/intelligence --config /etc/intelligence-network/node.toml run
+Restart=on-failure
+RestartSec=5s
+Environment=RUST_LOG=info
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/intelligence-network
+LimitNOFILE=4096
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,50 @@
+# Rust build and coverage output
+/target/
+/fuzz/target/
+/.cache/
+/dist/
+/ci-dist/
+/coverage/
+*.profraw
+*.profdata
+
+# Local runtime state and credentials
+/state/
+/testnet-state/
+/models/
+/datasets/
+/checkpoints/
+/artifacts/
+*.key
+*.pem
+*.p12
+*.pfx
+.env
+.env.*
+
+# Controlled-lab and emulator output (all generated data belongs outside Git)
+*.log
+*.ndjson
+*.pid
+*.sock
+*.fifo
+*.tsv
+inlab-*
+inventory.tsv
+*.inventory.tsv
+
+# Development and research material is retained locally but is not part of the
+# public release surface.
+/internal/
+/GIT_POLICY.md
+
+# Editor and operating-system files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+*.orig
+*.rej

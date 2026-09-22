@@ -1,0 +1,101 @@
+# Copy this file to a node-owned location and edit the addresses before starting.
+# The node is local-first: it never downloads model weights or datasets.
+
+data_dir = "/var/lib/intelligence-network"
+identity_path = "/var/lib/intelligence-network/identity.key"
+admin_socket = "/var/lib/intelligence-network/node.sock"
+listen_addr = "0.0.0.0:4000"
+# This release accepts a public IP:port in the signed address record.
+advertise_addr = "203.0.113.10:4000"
+# Bootstrap is an address hint only. Add several independently operated nodes for startup.
+bootstrap = ["198.51.100.20:4000"]
+# Relays are optional and replaceable. Leave empty when direct reachability is sufficient.
+relay_addresses = ["198.51.100.30:4000", "198.51.100.31:4000"]
+relay_enabled = false
+relay_max_sessions = 64
+relay_max_bytes = 67108864
+prefer_relay = false
+allow_private_addresses = false
+hole_punch_enabled = true
+hole_punch_max_attempts = 4
+dht_enabled = true
+dht_k = 20
+dht_alpha = 3
+dht_max_records = 2048
+max_connections = 64
+max_frame_size = 1048576
+peer_ttl_seconds = 300
+# V3 reference-training local state budget. Workers need only their assigned
+# shard, not the complete model state, to fit this budget.
+training_memory_bytes = 67108864
+# Bounded straggler injection for controlled experiments; keep zero in normal operation.
+training_window_delay_ms = 0
+
+[storage]
+quota_bytes = 1073741824
+max_artifact_bytes = 268435456
+
+[runtime]
+max_queued_jobs = 32
+max_concurrent_jobs = 2
+max_input_bytes = 65536
+max_output_bytes = 1048576
+default_timeout_ms = 30000
+process_memory_bytes = 536870912
+process_cpu_seconds = 30
+work_dir = "/var/lib/intelligence-network/runtime-work"
+
+[[capabilities]]
+name = "inference.text"
+version = 1
+public = true
+accept_remote_jobs = true
+kind = "builtin_text"
+model = "builtin.tiny-sentiment.v1"
+sandbox = "trusted_local"
+max_input_bytes = 65536
+max_output_bytes = 16384
+memory_bytes = 67108864
+cpu_millis = 1000
+
+[[capabilities]]
+name = "evaluation.text"
+version = 1
+public = true
+accept_remote_jobs = true
+kind = "builtin_text"
+model = "builtin.tiny-sentiment.v1"
+sandbox = "trusted_local"
+max_input_bytes = 65536
+max_output_bytes = 16384
+memory_bytes = 67108864
+cpu_millis = 1000
+
+[[capabilities]]
+name = "training.reference"
+version = 1
+public = true
+accept_remote_jobs = true
+kind = "builtin_training"
+sandbox = "trusted_local"
+max_input_bytes = 65536
+max_output_bytes = 16384
+memory_bytes = 67108864
+cpu_millis = 1000
+
+# An operator may add a real local LLM capability. This is intentionally commented out:
+# the program, model_path, and bubblewrap policy must be supplied by the operator.
+# [[capabilities]]
+# name = "inference.llama-cpp"
+# version = 1
+# public = true
+# accept_remote_jobs = true
+# kind = "llama_cpp"
+# program = "/usr/local/bin/llama-cli"
+# model_path = "/srv/models/operator-supplied.gguf"
+# args = ["--ctx-size", "2048"]
+# sandbox = "bubblewrap"
+# max_input_bytes = 65536
+# max_output_bytes = 65536
+# memory_bytes = 4294967296
+# cpu_millis = 30000

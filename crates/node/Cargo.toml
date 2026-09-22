@@ -1,0 +1,30 @@
+[package]
+name = "intelligence-node"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[features]
+default = ["cpu"]
+cpu = ["intelligence-intelligence/cpu"]
+cuda = ["intelligence-intelligence/cuda"]
+rocm = ["intelligence-intelligence/rocm"]
+metal = ["intelligence-intelligence/metal"]
+
+[dependencies]
+hex.workspace = true
+intelligence-intelligence = { path = "../intelligence", default-features = false }
+intelligence-network = { path = "../network" }
+intelligence-protocol = { path = "../protocol" }
+intelligence-runtime = { path = "../runtime" }
+intelligence-storage = { path = "../storage" }
+libc.workspace = true
+postcard.workspace = true
+rand.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+toml.workspace = true
+tracing.workspace = true
