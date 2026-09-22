@@ -14,6 +14,7 @@ highlight = "all"
 [licenses]
 confidence-threshold = 0.8
 allow = [
+    "AGPL-3.0-only",
     "Apache-2.0",
     "BSD-2-Clause",
     "BSD-3-Clause",

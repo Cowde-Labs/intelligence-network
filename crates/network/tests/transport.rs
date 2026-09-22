@@ -1,8 +1,10 @@
 use intelligence_network::{Identity, NetworkConfig, NetworkEvent, start};
 use intelligence_storage::LocalStore;
 use std::{
+    collections::HashSet,
     fs,
     net::{SocketAddr, TcpListener},
+    sync::{Mutex, OnceLock},
     time::{SystemTime, UNIX_EPOCH},
 };
 use tokio::{
@@ -11,8 +13,16 @@ use tokio::{
 };
 
 fn free_addr() -> SocketAddr {
-    let listener = TcpListener::bind("127.0.0.1:0").expect("free port");
-    listener.local_addr().expect("address")
+    static USED_PORTS: OnceLock<Mutex<HashSet<u16>>> = OnceLock::new();
+    let used_ports = USED_PORTS.get_or_init(|| Mutex::new(HashSet::new()));
+    for _ in 0..1_000 {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("free port");
+        let address = listener.local_addr().expect("address");
+        if used_ports.lock().unwrap().insert(address.port()) {
+            return address;
+        }
+    }
+    panic!("unable to allocate an isolated test port")
 }
 
 fn root(label: &str) -> std::path::PathBuf {

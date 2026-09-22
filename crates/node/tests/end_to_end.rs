@@ -4,17 +4,26 @@ use intelligence_node::{
 use intelligence_protocol::{JobId, JobState, NodeId, TrainingStart};
 use intelligence_storage::{LocalStore, PersistedJob};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, HashSet},
     fs,
     net::{SocketAddr, TcpListener},
     path::PathBuf,
+    sync::{Mutex, OnceLock},
     time::{SystemTime, UNIX_EPOCH},
 };
 use tokio::time::{Duration, Instant, sleep, timeout};
 
 fn free_addr() -> SocketAddr {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    listener.local_addr().unwrap()
+    static USED_PORTS: OnceLock<Mutex<HashSet<u16>>> = OnceLock::new();
+    let used_ports = USED_PORTS.get_or_init(|| Mutex::new(HashSet::new()));
+    for _ in 0..1_000 {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        if used_ports.lock().unwrap().insert(address.port()) {
+            return address;
+        }
+    }
+    panic!("unable to allocate an isolated test port")
 }
 
 fn root(label: &str) -> PathBuf {
