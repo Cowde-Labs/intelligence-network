@@ -156,7 +156,7 @@ if [[ "$first_ok" != 1 ]]; then
   exit 1
 fi
 
-"$binary" --config "$state_root/bootstrap.toml" shutdown >/dev/null
+"$binary" --config "$state_root/bootstrap.toml" dev shutdown >/dev/null
 wait "$bootstrap_pid" 2>/dev/null || true
 bootstrap_pid=""
 sleep 0.5

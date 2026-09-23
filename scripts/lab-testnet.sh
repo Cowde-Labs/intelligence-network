@@ -1043,7 +1043,7 @@ EOF
       local pid
       pid=$(cat "$pid_file")
       if [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null; then
-        timeout 1s "$binary" --config "$config" shutdown >/dev/null 2>&1 || true
+        timeout 1s "$binary" --config "$config" dev shutdown >/dev/null 2>&1 || true
         for _ in $(seq 1 20); do
           kill -0 "$pid" 2>/dev/null || break
           sleep 0.05
@@ -1074,7 +1074,7 @@ EOF
   wait_capability() {
     local name=$1 capability=$2 config="$lab_root/nodes/$1/node.toml"
     for _ in $(seq 1 200); do
-      if "$binary" --config "$config" --json peers 2>/dev/null | jq -e --arg c "$capability" 'any(.[]; any(.capabilities[]?; .name == $c))' >/dev/null 2>&1; then return 0; fi
+      if "$binary" --config "$config" --json network peers 2>/dev/null | jq -e --arg c "$capability" 'any(.[]; any(.capabilities[]?; .name == $c))' >/dev/null 2>&1; then return 0; fi
       sleep 0.1
     done
     return 1
@@ -1084,7 +1084,7 @@ EOF
     local name=$1 wanted_hex=$2 wanted_json
     wanted_json=$(python3 -c 'import json, sys; print(json.dumps(list(bytes.fromhex(sys.argv[1]))))' "$wanted_hex") || return 1
     for _ in $(seq 1 200); do
-      if "$binary" --config "$lab_root/nodes/$name/node.toml" --json peers 2>/dev/null \
+      if "$binary" --config "$lab_root/nodes/$name/node.toml" --json network peers 2>/dev/null \
         | jq -e --argjson wanted "$wanted_json" 'any(.[]; .node_id == $wanted)' >/dev/null 2>&1; then
         return 0
       fi
@@ -1110,7 +1110,7 @@ EOF
   # Training recovery can temporarily consume the node's normal admin
   # response budget while it is authenticating replacement members and
   # committing the next graph.  Keep ordinary discovery probes short, but
-  # give the durable training-status observer its own bounded budget so a
+  # give the durable train status observer its own bounded budget so a
   # healthy survivor is not mistaken for a dead peer.
   v4_status_probe() {
     local name=$1
@@ -1146,7 +1146,7 @@ EOF
     if [[ -n "$preferred" ]] \
       && [[ -z "${dead_names:-}" || ",${dead_names}," != *",${preferred},"* ]] \
       && (( status_probe_tick % fanout_every != 0 )); then
-      output=$(v4_status_probe "$preferred" training-status --job-id "$job_id" 2>/dev/null || true)
+      output=$(v4_status_probe "$preferred" train status --job-id "$job_id" 2>/dev/null || true)
       if jq -e 'type == "object" and .job_id != null' <<< "$output" >/dev/null 2>&1; then
         state=$output
         status_node=$preferred
@@ -1159,7 +1159,7 @@ EOF
       if [[ -n "${dead_names:-}" && ",$dead_names," == *",$candidate,"* ]]; then
         continue
       fi
-      output=$(v4_status_probe "$candidate" training-status --job-id "$job_id" 2>/dev/null || true)
+      output=$(v4_status_probe "$candidate" train status --job-id "$job_id" 2>/dev/null || true)
       if jq -e 'type == "object" and .job_id != null' <<< "$output" >/dev/null 2>&1; then
         # A healthy member can legitimately hold a previous committed graph
         # while another member has already persisted a newer generation.  Do
@@ -1267,7 +1267,7 @@ EOF
   wait_v3_training_peers() {
     local name=$1
     for _ in $(seq 1 300); do
-      if cli_json_probe "$name" peers 2>/dev/null \
+      if cli_json_probe "$name" network peers 2>/dev/null \
         | jq -e '[.[] | select(any(.capabilities[]?; .name == "training.reference"))] | length >= 4' >/dev/null 2>&1; then
         return 0
       fi
@@ -1374,27 +1374,27 @@ open(os.environ["INLAB_MARKER"],"w").write(outcome); s.close()' &
 
   test_dht_join() {
     local stats
-    stats=$(cli_json requester dht-stats)
+    stats=$(cli_json requester network stats)
     jq -e '.enabled == true and .routing.bucket_count == 256' <<< "$stats" >/dev/null
   }
 
   test_dht_v2() {
     local provider_id provider_owner records stats published
     provider_id=$(cli_json worker-a identity | jq -r '.node_id')
-    if ! published=$(dht_cli_timeout "${INLAB_DHT_PUBLISH_TIMEOUT_SECONDS:-15}" worker-a dht-publish \
+    if ! published=$(dht_cli_timeout "${INLAB_DHT_PUBLISH_TIMEOUT_SECONDS:-15}" worker-a network publish \
       --namespace capability --name lab.v2.inference \
       --value "{\"provider\":\"$provider_id\",\"evidence\":\"claimed\"}" \
       --ttl-seconds 300 --sequence 1 2>&1); then
       printf 'publish failed: %s\n' "$published"
-      cli_json worker-a dht-stats 2>&1 || true
+      cli_json worker-a network stats 2>&1 || true
       return 1
     fi
     provider_owner=$(jq -c '.owner' <<< "$published")
     printf 'published: %s\n' "$published"
-    printf 'worker stats: '; cli_json worker-a dht-stats 2>&1 || true
+    printf 'worker stats: '; cli_json worker-a network stats 2>&1 || true
     records='[]'
     for _ in $(seq 1 20); do
-      records=$(dht_cli requester dht-lookup \
+      records=$(dht_cli requester network lookup \
         --namespace capability --name lab.v2.inference 2>&1 || printf '[]')
       if jq -e --argjson owner "$provider_owner" \
         'any(.[]?; .owner == $owner)' <<< "$records" >/dev/null 2>&1; then
@@ -1404,33 +1404,33 @@ open(os.environ["INLAB_MARKER"],"w").write(outcome); s.close()' &
     done
     if ! jq -e --argjson owner "$provider_owner" 'any(.[]?; .owner == $owner)' <<< "$records" >/dev/null; then
       printf 'lookup failed: %s\n' "$records"
-      printf 'requester stats: '; cli_json requester dht-stats 2>&1 || true
+      printf 'requester stats: '; cli_json requester network stats 2>&1 || true
       return 1
     fi
     stop_node bootstrap
-    records=$(dht_cli requester dht-lookup \
+    records=$(dht_cli requester network lookup \
       --namespace capability --name lab.v2.inference)
     jq -e --argjson owner "$provider_owner" 'any(.[]?; .owner == $owner)' <<< "$records" >/dev/null || return 1
-    stats=$(cli_json requester dht-stats)
+    stats=$(cli_json requester network stats)
     jq -e '.enabled == true and .routing.contacts >= 1 and .lookup_successes >= 1' <<< "$stats" >/dev/null
   }
 
   test_dht_bootstrap_death() {
     local provider_id provider_owner records
     provider_id=$(cli_json worker-a identity | jq -r '.node_id')
-    records=$(cli_json requester dht-lookup \
+    records=$(cli_json requester network lookup \
       --namespace capability --name lab.v2.inference)
-    provider_owner=$(cli_json worker-a dht-lookup --namespace capability --name lab.v2.inference \
+    provider_owner=$(cli_json worker-a network lookup --namespace capability --name lab.v2.inference \
       | jq -c '.[0].owner')
     jq -e --argjson owner "$provider_owner" 'any(.[]?; .owner == $owner)' <<< "$records" >/dev/null
   }
 
   test_dht_stale_record() {
-    cli_json worker-a dht-publish \
+    cli_json worker-a network publish \
       --namespace capability --name lab.v2.stale \
       --value '{"provider":"stale-fixture"}' --ttl-seconds 300 --sequence 1 >/dev/null || return 1
     set +e
-    cli_json worker-a dht-publish \
+    cli_json worker-a network publish \
       --namespace capability --name lab.v2.stale \
       --value '{"provider":"stale-replay"}' --ttl-seconds 300 --sequence 1 >/dev/null 2>&1
     local replay_status=$?
@@ -1447,7 +1447,7 @@ open(os.environ["INLAB_MARKER"],"w").write(outcome); s.close()' &
       subject=$(cli_json "$subject_name" identity 2>/dev/null | jq -r '.node_id' 2>/dev/null || true)
       [[ "$subject" =~ ^[0-9a-f]{64}$ ]] || continue
       for _ in $(seq 1 3); do
-        trust=$(cli_json requester trust --subject "$subject" 2>/dev/null || true)
+        trust=$(cli_json requester trust inspect --subject "$subject" 2>/dev/null || true)
         jq -e '.decision.direct_successes >= 1 and .claim_level == "BasicDefenses"' <<< "$trust" >/dev/null 2>&1 && return 0
         sleep 1
       done
@@ -1456,7 +1456,7 @@ open(os.environ["INLAB_MARKER"],"w").write(outcome); s.close()' &
   }
 
   test_training_planner() {
-    cli_json requester plan-training --model-bytes 256 --data-locality selective --workers 2 \
+    cli_json requester train plan --mode local-sgd --model-bytes 256 --data-locality selective --workers 2 \
       | jq -e '.evidence_class == "REAL_PROCESS_LOCAL" and (.decision.selected_workers | length) >= 2' >/dev/null
   }
 
@@ -1552,7 +1552,7 @@ open(os.environ["INLAB_MARKER"],"w").write(outcome); s.close()' &
     start_node requester
     wait_ready requester
     head -c 4000000 /dev/zero > "$fixture"
-    register_json=$(cli_json worker-a register-model --path "$fixture" --identity lab.transfer.fixture.v1 --format opaque)
+    register_json=$(cli_json worker-a model register --path "$fixture" --identity lab.transfer.fixture.v1 --format opaque)
     artifact=$(jq -r '.artifact' <<< "$register_json")
     [[ "$artifact" =~ ^[0-9a-f]{64}$ ]] || return 1
     worker_id=$(cli_json worker-a identity | jq -r '.node_id')
@@ -1565,7 +1565,7 @@ open(os.environ["INLAB_MARKER"],"w").write(outcome); s.close()' &
     inner_ns inlab-internet tc qdisc replace dev inlab-v06a root netem delay 50ms 10ms loss 0% rate 1mbit
     inner_ns inlab-nat-home tc qdisc replace dev inlab-v06b root netem delay 50ms 10ms loss 0% rate 1mbit
     set +e
-    "$binary" --config "$lab_root/nodes/requester/node.toml" --json fetch-artifact \
+    "$binary" --config "$lab_root/nodes/requester/node.toml" --json artifact fetch \
       --peer "$worker_id" --artifact "$artifact" > "$lab_root/fetch-first.json" 2>&1 &
     fetch_pid=$!
     for _ in $(seq 1 240); do
@@ -1598,12 +1598,12 @@ open(os.environ["INLAB_MARKER"],"w").write(outcome); s.close()' &
     sleep 1
     printf 'X' | dd of="$partial" bs=1 seek=0 conv=notrunc status=none
     set +e
-    cli_json requester fetch-artifact --peer "$worker_id" --artifact "$artifact" > "$lab_root/fetch-corrupt.json" 2>&1
+    cli_json requester artifact fetch --peer "$worker_id" --artifact "$artifact" > "$lab_root/fetch-corrupt.json" 2>&1
     local corrupt_status=$?
     set -e
     (( corrupt_status != 0 )) || return 1
     rm -f -- "$partial"
-    cli_json requester fetch-artifact --peer "$worker_id" --artifact "$artifact" \
+    cli_json requester artifact fetch --peer "$worker_id" --artifact "$artifact" \
       | jq -e '.verified == true' >/dev/null
   }
 
@@ -1611,7 +1611,7 @@ open(os.environ["INLAB_MARKER"],"w").write(outcome); s.close()' &
     local fixture="$lab_root/fixtures/quota-fixture.bin"
     head -c 70000 /dev/zero > "$fixture"
     set +e
-    cli_json client-cgnat register-model --path "$fixture" --identity lab.quota.fixture.v1 --format opaque >/dev/null 2>&1
+    cli_json client-cgnat model register --path "$fixture" --identity lab.quota.fixture.v1 --format opaque >/dev/null 2>&1
     local quota_status=$?
     set -e
     (( quota_status != 0 )) || return 1
@@ -1622,7 +1622,7 @@ open(os.environ["INLAB_MARKER"],"w").write(outcome); s.close()' &
 
   test_training() {
     local output
-    if ! output=$(cli_json requester train-reference --workers 2 --steps 3); then
+    if ! output=$(cli_json requester train reference --workers 2 --steps 3); then
       printf 'reference training command failed; requester status:\n' >&2
       cli_json requester status >&2 || true
       printf 'reference training output:\n%s\n' "$output" >&2
@@ -1634,18 +1634,18 @@ open(os.environ["INLAB_MARKER"],"w").write(outcome); s.close()' &
   test_v3_training() {
     local output
     for _ in $(seq 1 300); do
-      if cli_json_probe requester peers 2>/dev/null \
+      if cli_json_probe requester network peers 2>/dev/null \
         | jq -e '[.[] | select(any(.capabilities[]?; .name == "training.reference"))] | length >= 4' >/dev/null 2>&1; then
         break
       fi
       sleep 0.1
     done
-    cli_json_probe requester peers 2>/dev/null \
+    cli_json_probe requester network peers 2>/dev/null \
       | jq -e '[.[] | select(any(.capabilities[]?; .name == "training.reference"))] | length >= 4' >/dev/null || {
       printf 'V3 training workers were not visible before admission\n' >&2
       return 1
     }
-    if ! output=$(v3_cli requester train-v3 \
+    if ! output=$(v3_cli requester train --mode local-sgd \
       --workers 4 --windows 4 --local-steps 2 --checkpoint-every 2); then
       printf 'V3 training command failed:\n%s\n' "$output" >&2
       return 1
@@ -1721,7 +1721,7 @@ open(os.environ["INLAB_MARKER"],"w").write(outcome); s.close()' &
     local job_id state holders=0
     job_id=$(jq -r '.job_id' "$lab_root/v3-training.json")
     for name in worker-a worker-b relay-a relay-b; do
-      state=$(cli_json "$name" training-status --job-id "$job_id" 2>/dev/null || true)
+      state=$(cli_json "$name" train status --job-id "$job_id" 2>/dev/null || true)
       if jq -e '.window >= 4 and .checkpoint_generation >= 2 and ([.shards[].generation] | min) >= 4' <<< "$state" >/dev/null 2>&1; then
         holders=$((holders + 1))
       fi
@@ -1730,7 +1730,7 @@ open(os.environ["INLAB_MARKER"],"w").write(outcome); s.close()' &
     stop_node worker-a
     start_node worker-a
     wait_ready worker-a
-    state=$(cli_json worker-a training-status --job-id "$job_id") || return 1
+    state=$(cli_json worker-a train status --job-id "$job_id") || return 1
     jq -e '
       .job_id != null
       and .window >= 4
@@ -1798,7 +1798,7 @@ open(os.environ["INLAB_MARKER"],"w").write(outcome); s.close()' &
     stop_node "$creator_name"
     sleep 1
     rm -f -- "$lab_root/nodes/requester/state/artifacts/$artifact"
-    cli_json requester fetch-artifact --peer "$replica_hex" --artifact "$artifact" \
+    cli_json requester artifact fetch --peer "$replica_hex" --artifact "$artifact" \
       | jq -e --arg source "$replica_hex" '.verified == true and .source == $source' >/dev/null || {
         start_node "$creator_name"
         wait_ready "$creator_name"
@@ -1821,7 +1821,7 @@ open(os.environ["INLAB_MARKER"],"w").write(outcome); s.close()' &
     local aggregator_id aggregator_name started job_id state recovered=0
     aggregator_id=$(jq -c ".groups[$group_index].aggregator" "$lab_root/v3-training.json")
     aggregator_name=$(node_name_for_id "$aggregator_id") || return 1
-    if ! started=$(cli_json requester train-v3-start \
+    if ! started=$(cli_json requester train start --mode local-sgd \
       --workers 4 --windows 8 --local-steps 2 --checkpoint-every 4); then
       printf 'V3 aggregator-failure start failed; requester status:\n' >&2
       cli_json_probe requester status >&2 || true
@@ -1830,7 +1830,7 @@ open(os.environ["INLAB_MARKER"],"w").write(outcome); s.close()' &
     job_id=$(jq -r '.job_id' <<< "$started")
     local first_window=0
     for _ in $(seq 1 100); do
-      state=$(cli_json_probe "$aggregator_name" training-status --job-id "$job_id" 2>/dev/null || true)
+      state=$(cli_json_probe "$aggregator_name" train status --job-id "$job_id" 2>/dev/null || true)
       if jq -e '.window >= 1' <<< "$state" >/dev/null 2>&1; then
         first_window=1
         break
@@ -1840,8 +1840,8 @@ open(os.environ["INLAB_MARKER"],"w").write(outcome); s.close()' &
     if (( first_window == 0 )); then
       printf 'V3 aggregator-failure job %s did not reach its first window on %s; states:\n' \
         "$job_id" "$aggregator_name" >&2
-      cli_json_probe "$aggregator_name" training-status --job-id "$job_id" >&2 || true
-      cli_json_probe requester training-status --job-id "$job_id" >&2 || true
+      cli_json_probe "$aggregator_name" train status --job-id "$job_id" >&2 || true
+      cli_json_probe requester train status --job-id "$job_id" >&2 || true
       return 1
     fi
     stop_node "$aggregator_name"
@@ -1853,7 +1853,7 @@ open(os.environ["INLAB_MARKER"],"w").write(outcome); s.close()' &
       sleep 0.1
     done
     for _ in $(seq 1 300); do
-      state=$(cli_json_probe requester training-status --job-id "$job_id" 2>/dev/null || true)
+      state=$(cli_json_probe requester train status --job-id "$job_id" 2>/dev/null || true)
       if jq -e '.window >= 8 and .checkpoint_generation >= 2 and ([.shards[].generation] | min) >= 8' <<< "$state" >/dev/null 2>&1; then
         recovered=1
         break
@@ -1864,15 +1864,15 @@ open(os.environ["INLAB_MARKER"],"w").write(outcome); s.close()' &
     if ! wait_ready "$aggregator_name"; then
       printf 'V3 aggregator-failure replacement %s did not become ready; job=%s\n' \
         "$aggregator_name" "$job_id" >&2
-      cli_json_probe requester training-status --job-id "$job_id" >&2 || true
+      cli_json_probe requester train status --job-id "$job_id" >&2 || true
       return 1
     fi
     if (( recovered == 0 )); then
       printf 'V3 aggregator failure did not recover job %s; requester state:\n' "$job_id" >&2
-      cli_json_probe requester training-status --job-id "$job_id" >&2 || true
+      cli_json_probe requester train status --job-id "$job_id" >&2 || true
       for candidate in worker-a worker-b relay-a relay-b; do
         printf '%s state:\n' "$candidate" >&2
-        cli_json_probe "$candidate" training-status --job-id "$job_id" >&2 || true
+        cli_json_probe "$candidate" train status --job-id "$job_id" >&2 || true
       done
       return 1
     fi
@@ -1906,7 +1906,7 @@ open(os.environ["INLAB_MARKER"],"w").write(outcome); s.close()' &
   test_v3_coordinator_replacement() {
     local started job_id requester_id state candidate_coordinator replaced=0
     restart_training_fabric_nodes || return 1
-    started=$(cli_json requester train-v3-start \
+    started=$(cli_json requester train start --mode local-sgd \
       --workers 4 --windows 8 --local-steps 2 --checkpoint-every 4) || return 1
     job_id=$(jq -r '.job_id' <<< "$started")
     requester_id=$(cli_json requester identity | jq -r '.node_id')
@@ -1915,7 +1915,7 @@ open(os.environ["INLAB_MARKER"],"w").write(outcome); s.close()' &
     stop_node requester
     for _ in $(seq 1 240); do
       for candidate in worker-a worker-b relay-a relay-b; do
-        state=$(cli_json_probe "$candidate" training-status --job-id "$job_id" 2>/dev/null || true)
+        state=$(cli_json_probe "$candidate" train status --job-id "$job_id" 2>/dev/null || true)
         candidate_coordinator=$(jq -c '.coordinator // empty' <<< "$state" 2>/dev/null || true)
         if [[ -n "$candidate_coordinator" ]] \
           && candidate_coordinator_hex=$(node_id_hex "$candidate_coordinator" 2>/dev/null) \
@@ -1965,7 +1965,7 @@ open(os.environ["INLAB_MARKER"],"w").write(outcome); s.close()' &
 
     printf '%s\n' 'reference step: plan' \
       >&2
-    plan=$(v4_cli requester plan-training-v4 \
+    plan=$(v4_cli requester train plan \
       --model-bytes 2048 --workers 4 --strategy hybrid \
       --tensor-degree 2 --pipeline-stages 2) || return 1
     jq -e '
@@ -1983,7 +1983,7 @@ open(os.environ["INLAB_MARKER"],"w").write(outcome); s.close()' &
     sleep 1
 
     printf '%s\n' 'reference step: replan' >&2
-    replan=$(v4_cli requester replan-training-v4 --job-id "$job_id" \
+    replan=$(v4_cli requester train replan --job-id "$job_id" \
       --model-bytes 2048 --workers 4 --strategy local_sgd \
       --tensor-degree 0 --pipeline-stages 0) || return 1
     jq -e '
@@ -1994,7 +1994,7 @@ open(os.environ["INLAB_MARKER"],"w").write(outcome); s.close()' &
       and .plan.parent_plan_hash != null
     ' <<< "$replan" >/dev/null || return 1
     printf '%s\n' 'reference step: activate' >&2
-    activated=$(v4_cli requester activate-training-v4 --job-id "$job_id") || return 1
+    activated=$(v4_cli requester train activate --job-id "$job_id") || return 1
     jq -e '
       .evidence_class == "REAL_PROCESS_LOCAL"
       and .plan_active == true
@@ -2003,7 +2003,7 @@ open(os.environ["INLAB_MARKER"],"w").write(outcome); s.close()' &
     ' <<< "$activated" >/dev/null || return 1
 
     printf '%s\n' 'reference step: tensor' >&2
-    tensor=$(v4_cli requester v4-tensor-demo --workers "$worker_a_id,$worker_b_id") || return 1
+    tensor=$(v4_cli requester dev tensor-demo --workers "$worker_a_id,$worker_b_id") || return 1
     jq -e '
       .evidence_class == "REAL_PROCESS_LOCAL"
       and .partitioned_operation == true
@@ -2012,7 +2012,7 @@ open(os.environ["INLAB_MARKER"],"w").write(outcome); s.close()' &
     ' <<< "$tensor" >/dev/null || return 1
 
     printf '%s\n' 'reference step: pipeline' >&2
-    pipeline=$(v4_cli requester v4-pipeline-demo \
+    pipeline=$(v4_cli requester dev pipeline-demo \
       --stages "$worker_a_id,$worker_b_id" --microbatches 3) || return 1
     jq -e '
       .evidence_class == "REAL_PROCESS_LOCAL"
@@ -2022,7 +2022,7 @@ open(os.environ["INLAB_MARKER"],"w").write(outcome); s.close()' &
     ' <<< "$pipeline" >/dev/null || return 1
 
     printf '%s\n' 'reference step: collective' >&2
-    collective=$(v4_cli requester v4-collective-demo \
+    collective=$(v4_cli requester dev collective-demo \
       --workers "$worker_a_id,$worker_b_id,$relay_a_id,$relay_b_id") || return 1
     jq -e '
       .evidence_class == "REAL_PROCESS_LOCAL"
@@ -2032,7 +2032,7 @@ open(os.environ["INLAB_MARKER"],"w").write(outcome); s.close()' &
     ' <<< "$collective" >/dev/null || return 1
 
     printf '%s\n' 'reference step: byzantine' >&2
-    byzantine=$(v4_cli requester v4-byzantine-demo \
+    byzantine=$(v4_cli requester dev byzantine-demo \
       --workers "$worker_a_id,$worker_b_id,$relay_a_id" --malicious 1 --policy median) || return 1
     jq -e '
       .evidence_class == "REAL_PROCESS_LOCAL"
@@ -2041,7 +2041,7 @@ open(os.environ["INLAB_MARKER"],"w").write(outcome); s.close()' &
     ' <<< "$byzantine" >/dev/null || return 1
 
     printf '%s\n' 'reference step: reconcile' >&2
-    reconcile=$(v4_cli requester v4-reconcile-demo --worker "$worker_a_id" \
+    reconcile=$(v4_cli requester train reconcile --worker "$worker_a_id" \
       --left-value 10 --right-value 14 --policy local_sgd) || return 1
     jq -e '
       .accepted == true
@@ -2053,10 +2053,10 @@ open(os.environ["INLAB_MARKER"],"w").write(outcome); s.close()' &
     # plan activation, with no hidden shared filesystem between namespaces.
     local migration_job='a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1' migrated
     printf '%s\n' 'reference step: seed-shard' >&2
-    cli_json worker-a v4-seed-shard --job-id "$migration_job" --shard-id 7 \
+    cli_json worker-a dev seed-shard --job-id "$migration_job" --shard-id 7 \
       --state 'v4-lab-network-shard' >/dev/null || return 1
     printf '%s\n' 'reference step: migrate-shard' >&2
-    migrated=$(v4_cli worker-a v4-migrate-shard --job-id "$migration_job" \
+    migrated=$(v4_cli worker-a train migrate --job-id "$migration_job" \
       --shard-id 7 --target "$worker_b_id") || return 1
     jq -e '
       .verified == true
@@ -2083,7 +2083,7 @@ open(os.environ["INLAB_MARKER"],"w").write(outcome); s.close()' &
     restart_training_fabric_nodes || return 1
     wait_v3_training_peers requester || return 1
     local output
-    output=$(v4_cli requester train-v4 --workers 4 --windows 2 --checkpoint-every 1) || {
+    output=$(v4_cli requester train --workers 4 --windows 2 --checkpoint-every 1) || {
       printf 'integrated V4 command failed; requester log follows:\n' >&2
       tail -n 120 "$lab_root/nodes/requester/node.log" >&2 || true
       return 1
@@ -2121,7 +2121,7 @@ open(os.environ["INLAB_MARKER"],"w").write(outcome); s.close()' &
       and any(.compute_backends[]; .kind == "Cpu" and .runtime_available == true)
       and all(.compute_backends[]; (.device_count > 0 and .max_concurrent_tasks > 0))
     ' <<< "$status" >/dev/null || return 1
-    plan=$(v4_cli requester plan-training-v4 \
+    plan=$(v4_cli requester train plan \
       --model-bytes 2048 --workers 4 --strategy hybrid \
       --tensor-degree 2 --pipeline-stages 2) || return 1
     jq -e '
@@ -2138,7 +2138,7 @@ open(os.environ["INLAB_MARKER"],"w").write(outcome); s.close()' &
     restart_training_fabric_nodes || return 1
     wait_v3_training_peers requester || return 1
     local output
-    output=$(v4_cli requester train-v4 --workers 4 --windows 2 --checkpoint-every 1) || return 1
+    output=$(v4_cli requester train --workers 4 --windows 2 --checkpoint-every 1) || return 1
     jq -e '
       .phase == "Committed"
       and .windows_completed == 2
@@ -2197,7 +2197,7 @@ open(os.environ["INLAB_MARKER"],"w").write(outcome); s.close()' &
     wait_v3_training_peers requester || return 1
     local output byzantine evaluator_results evaluator worker_a_id worker_b_id relay_a_id status requester_status
     printf 'V6: starting heterogeneous training\n' >&2
-    output=$(v4_cli requester train-v4 --workers 4 --windows 2 --checkpoint-every 1) || {
+    output=$(v4_cli requester train --workers 4 --windows 2 --checkpoint-every 1) || {
       printf 'V6 integrated training command failed; requester log follows:\n' >&2
       tail -n 160 "$lab_root/nodes/requester/node.log" >&2 || true
       return 1
@@ -2235,7 +2235,7 @@ open(os.environ["INLAB_MARKER"],"w").write(outcome); s.close()' &
     worker_b_id=$(cli_json worker-b identity | jq -r '.node_id') || return 1
     relay_a_id=$(cli_json relay-a identity | jq -r '.node_id') || return 1
     printf 'V6: running real-process duplicate/equivocation update attack\n' >&2
-    byzantine=$(v4_cli requester v4-byzantine-demo \
+    byzantine=$(v4_cli requester dev byzantine-demo \
       --workers "$worker_a_id,$worker_b_id,$relay_a_id" --malicious 1 --policy median) || return 1
     printf 'V6: Byzantine attack returned\n' >&2
     jq -e '.response.robust == true and (.response.rejected_workers | length) == 1' \
@@ -2281,7 +2281,7 @@ open(os.environ["INLAB_MARKER"],"w").write(outcome); s.close()' &
     local running=0 restarted=0 completed=0
     local -a candidates=(worker-a worker-b relay-a relay-b)
 
-    started=$(v4_cli requester train-v4-start \
+    started=$(v4_cli requester train start \
       --workers 4 --windows 12 --checkpoint-every 1) || return 1
     job_id=$(node_id_hex "$(jq -c '.job_id' <<< "$started")") || return 1
     [[ -n "$job_id" && "$job_id" != null ]] || return 1
@@ -2344,7 +2344,7 @@ open(os.environ["INLAB_MARKER"],"w").write(outcome); s.close()' &
     # from the ordinary two-worker startup bound so a slow isolated topology
     # cannot fail before the job exists.
     for _ in $(seq 1 "${INLAB_V4_JOIN_DISCOVERY_ATTEMPTS:-300}"); do
-      if cli_json_probe requester peers 2>/dev/null \
+      if cli_json_probe requester network peers 2>/dev/null \
         | jq -e '[.[] | select(any(.capabilities[]?; .name == "training.reference"))] | length >= 5' >/dev/null 2>&1; then
         discovered=1
         break
@@ -2355,7 +2355,7 @@ open(os.environ["INLAB_MARKER"],"w").write(outcome); s.close()' &
       printf 'V4 automatic join did not discover five signed training capabilities before the bounded deadline\n' >&2
       return 1
     }
-    started=$(v4_cli requester train-v4-start --workers 4 --windows 8 --checkpoint-every 2) || return 1
+    started=$(v4_cli requester train start --workers 4 --windows 8 --checkpoint-every 2) || return 1
     job_id=$(node_id_hex "$(jq -c '.job_id' <<< "$started")") || return 1
     [[ -n "$job_id" && "$job_id" != null ]] || return 1
     for _ in $(seq 1 "${INLAB_V4_JOIN_REPLAN_ATTEMPTS:-600}"); do
@@ -2390,7 +2390,7 @@ open(os.environ["INLAB_MARKER"],"w").write(outcome); s.close()' &
     local started job_id state status_node='' coordinator_json target_json
     local target_name='' old_generation current_generation=0 replanned=0 completed=0
     local -a candidates=(worker-a worker-b relay-a relay-b)
-    started=$(v4_cli requester train-v4-start \
+    started=$(v4_cli requester train start \
       --workers 4 --windows 12 --checkpoint-every 2) || return 1
     job_id=$(node_id_hex "$(jq -c '.job_id' <<< "$started")") || return 1
     [[ -n "$job_id" && "$job_id" != null ]] || return 1
@@ -2461,13 +2461,13 @@ open(os.environ["INLAB_MARKER"],"w").write(outcome); s.close()' &
     local started job_id state status_node='' split=0 completed=0
     local -a candidates=(worker-a worker-b relay-a relay-b)
     for _ in $(seq 1 "${INLAB_V4_SHARD_SPLIT_DISCOVERY_ATTEMPTS:-300}"); do
-      if cli_json_probe requester peers 2>/dev/null \
+      if cli_json_probe requester network peers 2>/dev/null \
         | jq -e '[.[] | select(any(.capabilities[]?; .name == "training.reference"))] | length >= 5' >/dev/null 2>&1; then
         break
       fi
       sleep 0.1
     done
-    started=$(v4_cli requester train-v4-start \
+    started=$(v4_cli requester train start \
       --workers 4 --windows 12 --checkpoint-every 2) || return 1
     job_id=$(node_id_hex "$(jq -c '.job_id' <<< "$started")") || return 1
     [[ -n "$job_id" && "$job_id" != null ]] || return 1
@@ -2536,7 +2536,7 @@ open(os.environ["INLAB_MARKER"],"w").write(outcome); s.close()' &
     # this bounded separately from job execution, but allow the full isolated
     # topology time to converge before declaring discovery impossible.
     for _ in $(seq 1 "${INLAB_V4_CASCADE_DISCOVERY_ATTEMPTS:-1500}"); do
-      if cli_json_probe requester peers 2>/dev/null \
+      if cli_json_probe requester network peers 2>/dev/null \
         | jq -e '[.[] | select(any(.capabilities[]?; .name == "training.reference"))] | length >= 7' >/dev/null 2>&1; then
         discovered=1
         break
@@ -2546,7 +2546,7 @@ open(os.environ["INLAB_MARKER"],"w").write(outcome); s.close()' &
     (( discovered == 1 )) || {
       printf 'V4 integrated cascade did not discover seven signed training capabilities before the bounded deadline\n' >&2
       printf 'requester peer snapshot:\n' >&2
-      cli_json_probe requester peers 2>&1 || true
+      cli_json_probe requester network peers 2>&1 || true
       return 1
     }
 
@@ -2556,7 +2556,7 @@ open(os.environ["INLAB_MARKER"],"w").write(outcome); s.close()' &
     # to leave some advertised candidates unavailable; the failure cascade
     # itself exercises the live quorum rather than treating a stale capability
     # record as an admitted worker.
-    started=$(v4_cli requester train-v4-start --workers "$initial_workers" --windows 48 --checkpoint-every 2) || return 1
+    started=$(v4_cli requester train start --workers "$initial_workers" --windows 48 --checkpoint-every 2) || return 1
     job_id=$(node_id_hex "$(jq -c '.job_id' <<< "$started")") || return 1
     [[ -n "$job_id" && "$job_id" != null ]] || return 1
 
@@ -2579,7 +2579,7 @@ open(os.environ["INLAB_MARKER"],"w").write(outcome); s.close()' &
       printf 'last durable status replica: %s\n' "${state:-<empty>}" >&2
       for candidate in "${candidates[@]}"; do
         printf 'status replica %s: ' "$candidate" >&2
-        cli_json_probe "$candidate" training-status --job-id "$job_id" 2>&1 || true
+        cli_json_probe "$candidate" train status --job-id "$job_id" 2>&1 || true
       done
       return 1
     }
@@ -2637,7 +2637,7 @@ open(os.environ["INLAB_MARKER"],"w").write(outcome); s.close()' &
       printf 'last durable cascade status: %s\n' "${state:-<empty>}" >&2
       for candidate in "${candidates[@]}"; do
         printf 'cascade status replica %s: ' "$candidate" >&2
-        cli_json_probe "$candidate" training-status --job-id "$job_id" 2>&1 || true
+        cli_json_probe "$candidate" train status --job-id "$job_id" 2>&1 || true
       done
       return 1
     }
@@ -2718,14 +2718,14 @@ open(os.environ["INLAB_MARKER"],"w").write(outcome); s.close()' &
     restart_training_fabric_nodes || return 1
     local started job_id state coordinator_json target_json old_branch
     local coordinator_name='' target_name='' branch_selected=0 completed=0
-    started=$(v4_cli requester train-v4-start \
+    started=$(v4_cli requester train start \
       --workers 4 --windows 12 --checkpoint-every 2) || return 1
     job_id=$(node_id_hex "$(jq -c '.job_id' <<< "$started")") || return 1
     [[ -n "$job_id" && "$job_id" != null ]] || return 1
 
     for _ in $(seq 1 "${INLAB_V4_RUNNING_ATTEMPTS:-120}"); do
       for candidate in worker-a worker-b relay-a relay-b; do
-        state=$(cli_json_probe "$candidate" training-status --job-id "$job_id" 2>/dev/null || true)
+        state=$(cli_json_probe "$candidate" train status --job-id "$job_id" 2>/dev/null || true)
         coordinator_json=$(jq -c '.execution_graph.coordinator // empty' <<< "$state" 2>/dev/null || true)
         target_json=$(jq -c --argjson coordinator "$coordinator_json" \
           '[.execution_graph.workers[] | select(. != $coordinator)][0] // empty' \
@@ -2756,7 +2756,7 @@ open(os.environ["INLAB_MARKER"],"w").write(outcome); s.close()' &
     for _ in $(seq 1 "${INLAB_V4_REPLACEMENT_ATTEMPTS:-300}"); do
       for candidate in worker-a worker-b relay-a relay-b; do
         [[ "$candidate" == "$target_name" ]] && continue
-        state=$(cli_json_probe "$candidate" training-status --job-id "$job_id" 2>/dev/null || true)
+        state=$(cli_json_probe "$candidate" train status --job-id "$job_id" 2>/dev/null || true)
         if jq -e --argjson old "$old_branch" \
           '.graph_generation >= 2 and .branch != $old and .phase != "Failed"' \
           <<< "$state" >/dev/null 2>&1; then
@@ -2772,7 +2772,7 @@ open(os.environ["INLAB_MARKER"],"w").write(outcome); s.close()' &
     for _ in $(seq 1 "${INLAB_V4_COMPLETION_ATTEMPTS:-240}"); do
       for candidate in worker-a worker-b relay-a relay-b; do
         [[ "$candidate" == "$target_name" ]] && continue
-        state=$(cli_json_probe "$candidate" training-status --job-id "$job_id" 2>/dev/null || true)
+        state=$(cli_json_probe "$candidate" train status --job-id "$job_id" 2>/dev/null || true)
         if jq -e '.phase == "Committed" and .window >= 12' <<< "$state" >/dev/null 2>&1; then
           completed=1
           break 2
@@ -2798,7 +2798,7 @@ open(os.environ["INLAB_MARKER"],"w").write(outcome); s.close()' &
     local started job_id original_id='' original_name='' state coordinator_json observed_id
     local probe_reported=0
     local replacement=0 completed=0
-    started=$(v4_cli requester train-v4-start \
+    started=$(v4_cli requester train start \
       --workers 4 --windows 12 --checkpoint-every 2) || return 1
     job_id=$(node_id_hex "$(jq -c '.job_id' <<< "$started")") || {
       printf 'V4 coordinator replacement: could not decode started job ID: %s\n' "$started" >&2
@@ -2814,10 +2814,10 @@ open(os.environ["INLAB_MARKER"],"w").write(outcome); s.close()' &
     # no executable-name or wildcard process selection is permitted.
     for _ in $(seq 1 "${INLAB_V4_RESOLVE_ATTEMPTS:-60}"); do
       for candidate in worker-a worker-b relay-a relay-b; do
-        state=$(cli_json_probe "$candidate" training-status --job-id "$job_id" 2>/dev/null || true)
+        state=$(cli_json_probe "$candidate" train status --job-id "$job_id" 2>/dev/null || true)
         if [[ -z "$state" && "$probe_reported" == 0 ]]; then
           printf 'V4 coordinator replacement: first status probe (%s) failed: %s\n' \
-            "$candidate" "$(cli_json_probe "$candidate" training-status --job-id "$job_id" 2>&1 || true)" >&2
+            "$candidate" "$(cli_json_probe "$candidate" train status --job-id "$job_id" 2>&1 || true)" >&2
           probe_reported=1
         fi
         coordinator_json=$(jq -c '.coordinator // empty' <<< "$state" 2>/dev/null || true)
@@ -2836,7 +2836,7 @@ open(os.environ["INLAB_MARKER"],"w").write(outcome); s.close()' &
     }
 
     for _ in $(seq 1 "${INLAB_V4_RUNNING_ATTEMPTS:-100}"); do
-      state=$(cli_json_probe "$original_name" training-status --job-id "$job_id" 2>/dev/null || true)
+      state=$(cli_json_probe "$original_name" train status --job-id "$job_id" 2>/dev/null || true)
       if jq -e '.phase == "Running"' <<< "$state" >/dev/null 2>&1; then
         break
       fi
@@ -2866,7 +2866,7 @@ open(os.environ["INLAB_MARKER"],"w").write(outcome); s.close()' &
     for _ in $(seq 1 "${INLAB_V4_REPLACEMENT_ATTEMPTS:-300}"); do
       for candidate in worker-a worker-b relay-a relay-b; do
         [[ "$candidate" == "$original_name" ]] && continue
-        state=$(cli_json_probe "$candidate" training-status --job-id "$job_id" 2>/dev/null || true)
+        state=$(cli_json_probe "$candidate" train status --job-id "$job_id" 2>/dev/null || true)
         coordinator_json=$(jq -c '.coordinator // empty' <<< "$state" 2>/dev/null || true)
         observed_id=''
         [[ -n "$coordinator_json" ]] && observed_id=$(node_id_hex "$coordinator_json" 2>/dev/null || true)
@@ -2881,14 +2881,14 @@ open(os.environ["INLAB_MARKER"],"w").write(outcome); s.close()' &
     (( replacement == 1 )) || {
       printf 'V4 coordinator replacement did not publish a new graph for job %s\n' "$job_id" >&2
       for candidate in worker-a worker-b relay-a relay-b; do
-        cli_json_probe "$candidate" training-status --job-id "$job_id" >&2 || true
+        cli_json_probe "$candidate" train status --job-id "$job_id" >&2 || true
       done
       return 1
     }
 
     for _ in $(seq 1 "${INLAB_V4_COMPLETION_ATTEMPTS:-120}"); do
       for candidate in worker-a worker-b relay-a relay-b; do
-        state=$(cli_json_probe "$candidate" training-status --job-id "$job_id" 2>/dev/null || true)
+        state=$(cli_json_probe "$candidate" train status --job-id "$job_id" 2>/dev/null || true)
         if jq -e '.phase == "Committed" and .window >= 12' <<< "$state" >/dev/null 2>&1; then
           completed=1
           break 2
@@ -2911,7 +2911,7 @@ open(os.environ["INLAB_MARKER"],"w").write(outcome); s.close()' &
     restart_training_fabric_nodes || return 1
     local started job_id state target_json original_id original_name='' coordinator_json
     local replacement=0 completed=0 probe_reported=0
-    started=$(v4_cli requester train-v4-start \
+    started=$(v4_cli requester train start \
       --workers 4 --windows 12 --checkpoint-every 2) || return 1
     job_id=$(node_id_hex "$(jq -c '.job_id' <<< "$started")") || return 1
     [[ -n "$job_id" && "$job_id" != null ]] || return 1
@@ -2920,7 +2920,7 @@ open(os.environ["INLAB_MARKER"],"w").write(outcome); s.close()' &
     # the job's authenticated topology, not a guessed process ordering.
     for _ in $(seq 1 "${INLAB_V4_RESOLVE_ATTEMPTS:-90}"); do
       for candidate in worker-a worker-b relay-a relay-b; do
-        state=$(cli_json_probe "$candidate" training-status --job-id "$job_id" 2>/dev/null || true)
+        state=$(cli_json_probe "$candidate" train status --job-id "$job_id" 2>/dev/null || true)
         if [[ -z "$state" && "$probe_reported" == 0 ]]; then
           printf 'V4 %s replacement: first status probe failed\n' "$kind" >&2
           probe_reported=1
@@ -2943,7 +2943,7 @@ open(os.environ["INLAB_MARKER"],"w").write(outcome); s.close()' &
     }
 
     for _ in $(seq 1 "${INLAB_V4_RUNNING_ATTEMPTS:-120}"); do
-      state=$(cli_json_probe "$original_name" training-status --job-id "$job_id" 2>/dev/null || true)
+      state=$(cli_json_probe "$original_name" train status --job-id "$job_id" 2>/dev/null || true)
       jq -e '.phase == "Running"' <<< "$state" >/dev/null 2>&1 && break
       sleep 0.1
     done
@@ -2968,7 +2968,7 @@ open(os.environ["INLAB_MARKER"],"w").write(outcome); s.close()' &
     for _ in $(seq 1 "${INLAB_V4_REPLACEMENT_ATTEMPTS:-300}"); do
       for candidate in worker-a worker-b relay-a relay-b; do
         [[ "$candidate" == "$original_name" ]] && continue
-        state=$(cli_json_probe "$candidate" training-status --job-id "$job_id" 2>/dev/null || true)
+        state=$(cli_json_probe "$candidate" train status --job-id "$job_id" 2>/dev/null || true)
         if jq -e --argjson old "$target_json" --arg kind "$kind" '
           .graph_generation >= 2
           and ((.phase == "Running") or (.phase == "Committed"))
@@ -2991,7 +2991,7 @@ open(os.environ["INLAB_MARKER"],"w").write(outcome); s.close()' &
     for _ in $(seq 1 "${INLAB_V4_COMPLETION_ATTEMPTS:-180}"); do
       for candidate in worker-a worker-b relay-a relay-b; do
         [[ "$candidate" == "$original_name" ]] && continue
-        state=$(cli_json_probe "$candidate" training-status --job-id "$job_id" 2>/dev/null || true)
+        state=$(cli_json_probe "$candidate" train status --job-id "$job_id" 2>/dev/null || true)
         if jq -e '.phase == "Committed" and .window >= 12' <<< "$state" >/dev/null 2>&1; then
           completed=1
           break 2
@@ -3027,7 +3027,7 @@ open(os.environ["INLAB_MARKER"],"w").write(outcome); s.close()' &
 
   test_coordinator_restart() {
     local output checkpoint requester_id
-    if ! output=$(cli_json requester train-reference --workers 2 --steps 2); then
+    if ! output=$(cli_json requester train reference --workers 2 --steps 2); then
       printf 'coordinator restart pre-check training failed; requester status:\n' >&2
       cli_json requester status >&2 || true
       printf 'coordinator restart training output:\n%s\n' "$output" >&2
@@ -3044,14 +3044,14 @@ open(os.environ["INLAB_MARKER"],"w").write(outcome); s.close()' &
     start_node requester
     wait_ready requester
     for _ in $(seq 1 200); do
-      if cli_json requester peers 2>/dev/null | jq -e '[.[] | select(any(.capabilities[]?; .name == "training.reference"))] | length >= 2' >/dev/null 2>&1; then
+      if cli_json requester network peers 2>/dev/null | jq -e '[.[] | select(any(.capabilities[]?; .name == "training.reference"))] | length >= 2' >/dev/null 2>&1; then
         break
       fi
       sleep 0.1
     done
-    cli_json requester train-reference --workers 2 --steps 2 --resume-checkpoint "$checkpoint" \
+    cli_json requester train reference --workers 2 --steps 2 --resume-checkpoint "$checkpoint" \
       | jq -e '.improved == true and .resumed_from != null and .evaluation.verified == true' >/dev/null || return 1
-    cli_json worker-a fetch-artifact --peer "$requester_id" --artifact "$checkpoint" \
+    cli_json worker-a artifact fetch --peer "$requester_id" --artifact "$checkpoint" \
       | jq -e '.verified == true' >/dev/null
   }
 
@@ -3065,7 +3065,7 @@ open(os.environ["INLAB_MARKER"],"w").write(outcome); s.close()' &
     # timeout; it accounts for the intentional 180 ms/loss profile.
     (
       INLAB_CLI_TIMEOUT_SECONDS="${INLAB_WORKER_LOSS_CLI_TIMEOUT_SECONDS:-120}" \
-        cli_json requester train-reference --workers 2 --steps 8 \
+        cli_json requester train reference --workers 2 --steps 8 \
         > "$lab_root/training-loss.json" 2>&1
     ) &
     training_pid=$!
@@ -3096,7 +3096,7 @@ open(os.environ["INLAB_MARKER"],"w").write(outcome); s.close()' &
     wait_ready worker-b
     wait_training_peers() {
       for _ in $(seq 1 200); do
-        if cli_json requester peers 2>/dev/null | jq -e '[.[] | select(any(.capabilities[]?; .name == "training.reference"))] | length >= 2' >/dev/null 2>&1; then
+        if cli_json requester network peers 2>/dev/null | jq -e '[.[] | select(any(.capabilities[]?; .name == "training.reference"))] | length >= 2' >/dev/null 2>&1; then
           return 0
         fi
         sleep 0.1
@@ -3104,7 +3104,7 @@ open(os.environ["INLAB_MARKER"],"w").write(outcome); s.close()' &
       return 1
     }
     wait_training_peers || return 1
-    cli_json requester train-reference --workers 2 --steps 2 --resume-checkpoint "$checkpoint" \
+    cli_json requester train reference --workers 2 --steps 2 --resume-checkpoint "$checkpoint" \
       | jq -e '.improved == true and (.resumed_from != null) and .evaluation.verified == true' >/dev/null
   }
 
@@ -3113,7 +3113,7 @@ open(os.environ["INLAB_MARKER"],"w").write(outcome); s.close()' &
     old_id=$(cli_json requester identity | jq -r '.node_id')
     now=$(date +%s)
     rotation_path="$lab_root/nodes/requester/state/identity-rotated.key"
-    cli_json requester rotate --new-path "$rotation_path" --sequence 1 --valid-until "$((now + 3600))" >/dev/null
+    cli_json requester identity rotate --new-path "$rotation_path" --sequence 1 --valid-until "$((now + 3600))" >/dev/null
     stop_node requester
     write_config requester "$rotation_path" true
     start_node requester
@@ -3121,7 +3121,7 @@ open(os.environ["INLAB_MARKER"],"w").write(outcome); s.close()' &
     new_id=$(cli_json requester identity | jq -r '.node_id')
     [[ "$old_id" != "$new_id" ]] || return 1
     set +e
-    cli_json requester rotate --new-path "$lab_root/nodes/requester/state/identity-rotated-again.key" --sequence 1 --valid-until "$((now + 3600))" >/dev/null 2>&1
+    cli_json requester identity rotate --new-path "$lab_root/nodes/requester/state/identity-rotated-again.key" --sequence 1 --valid-until "$((now + 3600))" >/dev/null 2>&1
     local stale_status=$?
     set -e
     (( stale_status != 0 ))

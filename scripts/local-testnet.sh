@@ -42,7 +42,7 @@ requester_pid=""
 cleanup() {
   for config in "$state_root/requester.toml" "$state_root/worker-b.toml" \
       "$state_root/worker-a.toml" "$state_root/relay.toml" "$state_root/bootstrap.toml"; do
-    [[ -f "$config" ]] && "$binary" --config "$config" shutdown >/dev/null 2>&1 || true
+    [[ -f "$config" ]] && "$binary" --config "$config" dev shutdown >/dev/null 2>&1 || true
   done
   for pid in "$requester_pid" "$worker_b_pid" "$worker_a_pid" "$relay_pid" "$bootstrap_pid"; do
     if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
@@ -170,7 +170,7 @@ run_inference() {
 wait_for_peer_address() {
   local node=$1 address=$2
   for _ in $(seq 1 160); do
-    if "$binary" --config "$state_root/$node.toml" --json peers \
+    if "$binary" --config "$state_root/$node.toml" --json network peers \
         | jq -e --arg address "$address" \
           'any(.[]; any(.addresses[]; . == $address))' >/dev/null 2>&1; then
       return 0
@@ -201,20 +201,20 @@ if [[ "$initial_ok" != 1 ]]; then
   exit 1
 fi
 
-artifact_json=$("$binary" --config "$state_root/worker-a.toml" register-model \
+artifact_json=$("$binary" --config "$state_root/worker-a.toml" model register \
   --path "$artifact_source" --identity "testnet.fixture.v1" --format opaque --local-only)
 artifact=$(jq -r '.artifact' <<<"$artifact_json")
 [[ "$artifact" != null && "${#artifact}" == 64 ]] || { echo "artifact registration failed" >&2; exit 1; }
 worker_a_id=$("$binary" --config "$state_root/worker-a.toml" --json identity | jq -r '.node_id')
 wait_for_peer_address requester "127.0.0.1:$worker_a_port"
-"$binary" --config "$state_root/requester.toml" fetch-artifact --peer "$worker_a_id" --artifact "$artifact" \
+"$binary" --config "$state_root/requester.toml" artifact fetch --peer "$worker_a_id" --artifact "$artifact" \
   | jq -e '.verified == true' >/dev/null
 "$binary" --config "$state_root/requester.toml" evaluate \
   --text "good and useful" --expected-label positive --deadline-ms 3000 \
   | jq -e '.state == "Succeeded" and .evidence.verified == true' >/dev/null
 
 # Exercise persistence and reconnect before removing bootstrap infrastructure.
-"$binary" --config "$state_root/worker-b.toml" shutdown >/dev/null
+"$binary" --config "$state_root/worker-b.toml" dev shutdown >/dev/null
 wait "$worker_b_pid" 2>/dev/null || true
 worker_b_pid=""
 start_node worker-b
@@ -222,7 +222,7 @@ wait_ready worker-b
 wait_for_peer_address requester "127.0.0.1:$worker_b_port"
 sleep 1
 
-"$binary" --config "$state_root/bootstrap.toml" shutdown >/dev/null
+"$binary" --config "$state_root/bootstrap.toml" dev shutdown >/dev/null
 wait "$bootstrap_pid" 2>/dev/null || true
 bootstrap_pid=""
 sleep 1
@@ -230,13 +230,13 @@ run_inference "inference after bootstrap outage"
 
 # The requester prefers relay transport while it is available; after R goes
 # away, send_to falls back to the authenticated direct path among known peers.
-"$binary" --config "$state_root/relay.toml" shutdown >/dev/null
+"$binary" --config "$state_root/relay.toml" dev shutdown >/dev/null
 wait "$relay_pid" 2>/dev/null || true
 relay_pid=""
 sleep 1
 run_inference "inference after relay outage"
 
-training_json=$("$binary" --config "$state_root/requester.toml" train-reference --workers 2 --steps 3)
+training_json=$("$binary" --config "$state_root/requester.toml" train reference --workers 2 --steps 3)
 jq -e '.improved == true and (.checkpoints | length) == 3' <<<"$training_json" >/dev/null
 
 echo "local testnet passed: direct/relay inference, evaluation, artifact verification, worker restart, bootstrap outage, relay outage, and distributed reference training"

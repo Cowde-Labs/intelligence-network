@@ -34,4 +34,6 @@ INTELLIGENCE_COMMIT="$INTELLIGENCE_COMMIT" "$package_dir/intelligence" version >
 sha256sum "$package_dir/intelligence" > "$package_dir/SHA256SUMS"
 tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner -czf "$package_dir.tar.gz" -C "$out_root" "$(basename "$package_dir")"
 sha256sum "$package_dir.tar.gz" >> "$package_dir/SHA256SUMS"
+archive_checksum=$(sha256sum "$package_dir.tar.gz" | awk '{print $1}')
+printf '%s  %s\n' "$archive_checksum" "$(basename "$package_dir.tar.gz")" > "$package_dir.tar.gz.sha256"
 echo "$package_dir.tar.gz"
