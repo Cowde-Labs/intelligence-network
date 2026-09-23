@@ -1452,11 +1452,29 @@ impl NetworkHandle {
         let Some(endpoint) = endpoint else {
             return;
         };
+        let listen_addr = endpoint.local_addr().ok();
         endpoint.close(VarInt::from_u32(0), b"shutdown");
-        // Closing the endpoint is asynchronous. Waiting briefly prevents an
-        // immediate same-address restart from racing the UDP socket teardown,
-        // while the timeout keeps shutdown bounded if a peer is uncooperative.
+        // Closing the endpoint is asynchronous. Wait for connections to
+        // drain, then for the endpoint driver to release the UDP socket, so
+        // that a same-address restart is possible as soon as this returns.
+        // Both waits stay bounded if a peer or the runtime is uncooperative.
         let _ = timeout(Duration::from_secs(2), endpoint.wait_idle()).await;
+        drop(endpoint);
+        let Some(listen_addr) = listen_addr else {
+            return;
+        };
+        let released = Instant::now() + Duration::from_secs(2);
+        while Instant::now() < released {
+            match std::net::UdpSocket::bind(listen_addr) {
+                Ok(_) => return,
+                Err(error) if error.kind() == io::ErrorKind::AddrInUse => {
+                    tokio::task::yield_now().await;
+                    sleep(Duration::from_millis(5)).await;
+                }
+                Err(_) => return,
+            }
+        }
+        tracing::warn!(%listen_addr, "UDP socket was not released within the shutdown bound");
     }
 }
 
@@ -1714,6 +1732,10 @@ async fn outbound_connection(
     let connecting = endpoint
         .connect(address, "intelligence-network")
         .map_err(|error| NetworkError::Quic(error.to_string()))?;
+    // The endpoint handle is only needed to dial.  Holding it for the life of
+    // the connection would keep the UDP socket open until every outbound
+    // session task has exited, which delays a same-address restart.
+    drop(endpoint);
     let connection = timeout(Duration::from_secs(5), connecting)
         .await
         .map_err(|_| NetworkError::Quic("peer connection timed out".to_string()))?

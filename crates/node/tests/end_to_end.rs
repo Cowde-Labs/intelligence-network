@@ -889,9 +889,37 @@ async fn v3_training_uses_group_updates_and_replicated_shards() {
     let restarted_root = worker_roots[0].clone();
     let restarted_address = worker_addresses[0];
     let stopped_worker = workers.remove(0);
+    // The coordinator commits the final checkpoint on a majority of
+    // participant acknowledgements, so its result can return before this
+    // particular worker has applied the commit.  Wait for that worker's own
+    // durable state to reflect the final window before stopping it; the
+    // restart assertions below are about restoring that state, not about
+    // whether this worker was inside the commit majority.
+    let job_id = result["job_id"].as_str().unwrap().to_string();
+    let mut durable_before_restart = false;
+    for _ in 0..400 {
+        if admin_call(
+            stopped_worker.admin_socket(),
+            &AdminRequest::TrainingStatus {
+                job_id: job_id.clone(),
+            },
+        )
+        .await
+        .is_ok_and(|status| {
+            status["window"] == 4
+                && status["checkpoint_generation"].as_u64().unwrap_or_default() >= 2
+        }) {
+            durable_before_restart = true;
+            break;
+        }
+        sleep(Duration::from_millis(25)).await;
+    }
+    assert!(
+        durable_before_restart,
+        "worker 0 never observed the final committed window and checkpoint"
+    );
     stopped_worker.shutdown().await;
     drop(stopped_worker);
-    sleep(Duration::from_millis(100)).await;
     let restarted_worker = Node::start(config(
         restarted_root,
         restarted_address,
