@@ -11,9 +11,11 @@ use std::{
     sync::{Mutex, OnceLock},
     time::{SystemTime, UNIX_EPOCH},
 };
-use tokio::time::{Duration, Instant, sleep, timeout};
+use tokio::time::{Duration, sleep};
+#[cfg(target_os = "linux")]
+use tokio::time::{Instant, timeout};
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 fn require_bubblewrap() {
     // Mirror the runtime's namespace and mount table so a host that cannot
     // run the real sandbox fails here with a direct message instead of as
@@ -120,7 +122,7 @@ fn training_capability() -> CapabilityConfig {
     }
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 fn slow_process_capability() -> CapabilityConfig {
     CapabilityConfig {
         name: "inference.text".to_string(),
@@ -142,7 +144,7 @@ fn slow_process_capability() -> CapabilityConfig {
     }
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 fn counted_process_capability() -> CapabilityConfig {
     CapabilityConfig {
         name: "inference.text".to_string(),
@@ -536,7 +538,7 @@ async fn remote_evaluation_returns_local_evidence() {
     let _ = fs::remove_dir_all(root_worker);
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
 async fn remote_job_can_be_cancelled_by_its_known_id() {
     require_bubblewrap();
@@ -591,7 +593,7 @@ async fn remote_job_can_be_cancelled_by_its_known_id() {
     let _ = fs::remove_dir_all(root_worker);
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
 async fn duplicate_inflight_job_is_executed_at_most_once() {
     require_bubblewrap();
@@ -1750,7 +1752,7 @@ async fn restart_marks_inflight_jobs_failed_before_accepting_work() {
     let _ = fs::remove_dir_all(data_dir);
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
 async fn disconnect_during_remote_job_returns_failure() {
     let root_requester = root("disconnect-requester");

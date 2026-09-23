@@ -1121,6 +1121,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(work_dir);
     }
 
+    #[cfg_attr(not(unix), allow(dead_code))]
     fn now_millis_for_test() -> u128 {
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

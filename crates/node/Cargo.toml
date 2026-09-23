@@ -13,6 +13,7 @@ rocm = ["intelligence-intelligence/rocm"]
 metal = ["intelligence-intelligence/metal"]
 
 [dependencies]
+blake3.workspace = true
 hex.workspace = true
 intelligence-intelligence = { path = "../intelligence", default-features = false }
 intelligence-network = { path = "../network" }

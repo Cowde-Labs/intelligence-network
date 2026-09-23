@@ -230,11 +230,11 @@ enum ModelCommand {
         path: PathBuf,
         #[arg(long, help = "Stable local model identity (defaults to the file name)")]
         identity: Option<String>,
-        #[arg(long, default_value = "opaque")]
-        format: String,
+        #[arg(long, help = "Model format (defaults to the file extension)")]
+        format: Option<String>,
     },
     #[command(
-        about = "List model files already present in standard local directories",
+        about = "List model files present in the local model directories",
         alias = "scan"
     )]
     List,
@@ -1255,7 +1255,10 @@ async fn execute(
                 path,
                 identity,
                 format,
-            } => model_add(config, path, identity, format, json).await?,
+            } => {
+                let format = format.unwrap_or_else(|| model_format(&path));
+                model_add(config, path, identity, format, json).await?
+            }
             ModelCommand::List => model_scan(config, json)?,
             ModelCommand::Register {
                 path,
@@ -1702,15 +1705,23 @@ async fn up_node(
         .open(&log_path)?;
     let stderr = stdout.try_clone()?;
     let executable = env::current_exe()?;
-    let mut child = ProcessCommand::new(executable)
+    let mut command = ProcessCommand::new(executable);
+    command
         .arg("--config")
         .arg(path)
         .arg("run")
         .env("INTELLIGENCE_DAEMON", "1")
         .stdin(Stdio::null())
         .stdout(Stdio::from(stdout))
-        .stderr(Stdio::from(stderr))
-        .spawn()?;
+        .stderr(Stdio::from(stderr));
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        // DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP so the node survives the
+        // console window closing.
+        command.creation_flags(0x00000008 | 0x00000200);
+    }
+    let mut child = command.spawn()?;
 
     let deadline = Instant::now() + Duration::from_secs(20);
     loop {
@@ -1793,7 +1804,20 @@ async fn down_node(path: &Path, json: bool) -> Result<(), Box<dyn std::error::Er
     .await
     {
         let deadline = Instant::now() + Duration::from_secs(5);
+        #[cfg(unix)]
         while socket.exists() && Instant::now() < deadline {
+            sleep(Duration::from_millis(100)).await;
+        }
+        // Named pipes leave no filesystem entry; poll the admin channel until
+        // the node stops answering instead.
+        #[cfg(windows)]
+        while Instant::now() < deadline {
+            if admin_call(socket.clone(), &AdminRequest::Status)
+                .await
+                .is_err()
+            {
+                break;
+            }
             sleep(Duration::from_millis(100)).await;
         }
         remove_pid_if_owned(&pid_path, read_pid(&pid_path).unwrap_or(0));
@@ -2196,8 +2220,8 @@ fn scan_model_directory(directory: &Path, depth: usize, result: &mut Vec<serde_j
         if file_type.is_dir() {
             scan_model_directory(&path, depth + 1, result);
         } else if file_type.is_file()
-            && is_model_file(&path)
             && let Ok(metadata) = entry.metadata()
+            && is_model_file(&path, &metadata)
         {
             result.push(serde_json::json!({
                 "path": path,
@@ -2208,14 +2232,13 @@ fn scan_model_directory(directory: &Path, depth: usize, result: &mut Vec<serde_j
     }
 }
 
-fn is_model_file(path: &Path) -> bool {
-    matches!(
-        path.extension()
-            .and_then(|extension| extension.to_str())
-            .map(|extension| extension.to_ascii_lowercase())
-            .as_deref(),
-        Some("gguf" | "ggml" | "safetensors" | "onnx" | "bin" | "pt" | "pth" | "model")
-    )
+fn is_model_file(path: &Path, metadata: &fs::Metadata) -> bool {
+    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    // Skip hidden files and the JSON manifests the node writes alongside
+    // registered artifacts; every other regular file counts as a model file.
+    !name.starts_with('.') && !name.ends_with(".json") && metadata.len() >= 1
 }
 
 fn model_format(path: &Path) -> String {
@@ -2542,6 +2565,13 @@ fn host_snapshot() -> serde_json::Value {
     if Path::new("/dev/kfd").exists() {
         gpu_hints.push("rocm-device".to_string());
     }
+    #[cfg(windows)]
+    if env::var_os("PATH")
+        .map(|paths| env::split_paths(&paths).any(|dir| dir.join("nvidia-smi.exe").is_file()))
+        .unwrap_or(false)
+    {
+        gpu_hints.push("cuda-device".to_string());
+    }
     if cfg!(target_os = "macos") {
         gpu_hints.push("metal-platform".to_string());
     }
@@ -2607,13 +2637,126 @@ fn service_install(path: &Path, json: bool) -> Result<(), Box<dyn std::error::Er
         }
         Ok(())
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "macos")]
+    {
+        let home = env::var_os("HOME").ok_or("HOME is required for a user agent")?;
+        let agent_dir = PathBuf::from(&home).join("Library/LaunchAgents");
+        fs::create_dir_all(&agent_dir)?;
+        let plist_path = agent_dir.join("network.intelligence.node.plist");
+        let executable = env::current_exe()?;
+        let config_path = fs::canonicalize(path)?;
+        let config = NodeConfig::load(path)?;
+        let log_path = config.data_dir.join("node.log");
+        if let Some(parent) = log_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let plist = format!(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\">\n<dict>\n    <key>Label</key>\n    <string>network.intelligence.node</string>\n    <key>ProgramArguments</key>\n    <array>\n        <string>{}</string>\n        <string>--config</string>\n        <string>{}</string>\n        <string>run</string>\n    </array>\n    <key>RunAtLoad</key>\n    <true/>\n    <key>KeepAlive</key>\n    <true/>\n    <key>StandardOutPath</key>\n    <string>{}</string>\n    <key>StandardErrorPath</key>\n    <string>{}</string>\n</dict>\n</plist>\n",
+            executable.display(),
+            config_path.display(),
+            log_path.display(),
+            log_path.display(),
+        );
+        fs::write(&plist_path, plist)?;
+        let domain = format!("gui/{}", unsafe { libc::getuid() });
+        let _ = ProcessCommand::new("launchctl")
+            .args(["bootout", &domain])
+            .arg(&plist_path)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+        let bootstrap = ProcessCommand::new("launchctl")
+            .args(["bootstrap", &domain])
+            .arg(&plist_path)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+        let active = bootstrap.as_ref().is_ok_and(|status| status.success());
+        let value = serde_json::json!({
+            "plist": plist_path,
+            "enabled": active,
+            "scope": "per-user",
+            "root_required": false,
+        });
+        if json {
+            print_json(value, true)?;
+        } else if active {
+            println!(
+                "Installed and started per-user agent: {}",
+                plist_path.display()
+            );
+        } else {
+            println!("Wrote per-user agent: {}", plist_path.display());
+            println!(
+                "launchctl bootstrap failed; run launchctl bootstrap {domain} {} when ready",
+                plist_path.display()
+            );
+        }
+        Ok(())
+    }
+    #[cfg(windows)]
+    {
+        let executable = env::current_exe()?;
+        let config_path = fs::canonicalize(path)?;
+        let strip_unc = |path: &Path| {
+            let display = path.to_string_lossy();
+            display
+                .strip_prefix(r"\\?\")
+                .unwrap_or(&display)
+                .to_string()
+        };
+        let run_line = format!(
+            "\"{}\" --config \"{}\" run",
+            strip_unc(&executable),
+            strip_unc(&config_path)
+        );
+        let create = ProcessCommand::new("schtasks")
+            .args([
+                "/Create",
+                "/F",
+                "/SC",
+                "ONLOGON",
+                "/TN",
+                "Intelligence Network",
+                "/TR",
+                &run_line,
+            ])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+        let run = ProcessCommand::new("schtasks")
+            .args(["/Run", "/TN", "Intelligence Network"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+        let active = create.as_ref().is_ok_and(|status| status.success())
+            && run.as_ref().is_ok_and(|status| status.success());
+        let value = serde_json::json!({
+            "task": "Intelligence Network",
+            "enabled": active,
+            "scope": "per-user",
+            "root_required": false,
+        });
+        if json {
+            print_json(value, true)?;
+        } else if active {
+            println!("Installed and started scheduled task: Intelligence Network");
+        } else {
+            println!("Registered scheduled task: Intelligence Network");
+            println!(
+                "Task Scheduler refused activation; run schtasks /Run /TN \"Intelligence Network\" when ready"
+            );
+        }
+        Ok(())
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
     {
         let _ = (path, json);
-        Err("service install currently supports Linux systemd user services; intelligence up/down remain available".into())
+        Err("service install currently supports Linux systemd, macOS launchd, or Windows Task Scheduler; intelligence up/down remain available".into())
     }
 }
 
+#[cfg(target_os = "linux")]
 fn systemd_quote(path: &Path) -> String {
     format!(
         "\"{}\"",
@@ -2683,7 +2826,21 @@ fn pid_is_node(pid: u32) -> bool {
                 .any(|window| window == b"intelligence")
         })
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "macos")]
+    {
+        ProcessCommand::new("ps")
+            .args(["-o", "command=", "-p", &pid.to_string()])
+            .output()
+            .is_ok_and(|output| String::from_utf8_lossy(&output.stdout).contains("intelligence"))
+    }
+    #[cfg(windows)]
+    {
+        ProcessCommand::new("tasklist")
+            .args(["/FI", &format!("PID eq {pid}"), "/FO", "CSV", "/NH"])
+            .output()
+            .is_ok_and(|output| String::from_utf8_lossy(&output.stdout).contains("intelligence"))
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
     {
         let _ = pid;
         false

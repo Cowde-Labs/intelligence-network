@@ -59,9 +59,25 @@ cargo deny check
 ./scripts/release.sh x86_64-unknown-linux-gnu .cache/release
 ```
 
-The release workflow packages Linux x86_64 and aarch64 binaries and publishes
-an archive checksum beside each artifact. The installer verifies that checksum
-before writing to `~/.local/bin`.
+The release workflow packages Linux x86_64/aarch64, macOS x86_64/aarch64 and
+Windows x86_64 binaries (`x86_64-unknown-linux-gnu`,
+`aarch64-unknown-linux-gnu`, `x86_64-apple-darwin`, `aarch64-apple-darwin`,
+`x86_64-pc-windows-msvc`) and publishes an archive checksum beside each
+artifact. The installer verifies that checksum before writing to
+`~/.local/bin` (or `%LOCALAPPDATA%\Programs\intelligence` via `install.ps1` on
+Windows).
+
+A compile-only cross check catches platform regressions without a linker:
+
+```bash
+rustup target add x86_64-pc-windows-msvc aarch64-apple-darwin x86_64-apple-darwin
+cargo check --workspace --all-targets --target x86_64-pc-windows-msvc
+cargo check --workspace --all-targets --target aarch64-apple-darwin
+cargo check --workspace --all-targets --target x86_64-apple-darwin
+```
+
+CI runs the same build/test/clippy gates on `ubuntu-24.04`, `macos-latest`
+and `windows-latest`.
 
 Changes to peer-facing formats require bounds, malformed-input tests, and a
 compatibility note. Long-running jobs must retain cancellation and recovery

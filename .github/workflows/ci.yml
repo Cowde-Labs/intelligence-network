@@ -53,3 +53,36 @@ jobs:
         run: ./scripts/banned-architecture-check.sh
       - name: Release build
         run: INTELLIGENCE_COMMIT="${GITHUB_SHA}" ./scripts/release.sh x86_64-unknown-linux-gnu ci-dist
+
+  verify-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Toolchain
+        run: rustc --version && cargo --version
+      - name: Format
+        run: cargo fmt --all -- --check
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Tests
+        run: cargo test --workspace -- --test-threads=1
+      - name: Release build
+        run: INTELLIGENCE_COMMIT="${GITHUB_SHA}" ./scripts/release.sh aarch64-apple-darwin ci-dist
+
+  verify-windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Toolchain
+        run: rustc --version && cargo --version
+      - name: Format
+        run: cargo fmt --all -- --check
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Tests
+        run: cargo test --workspace -- --test-threads=1
+      - name: Release build
+        run: INTELLIGENCE_COMMIT="${GITHUB_SHA}" ./scripts/release.sh x86_64-pc-windows-msvc ci-dist

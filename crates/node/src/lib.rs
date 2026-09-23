@@ -39,9 +39,12 @@ use std::{
     time::Duration,
 };
 use thiserror::Error;
+#[cfg(windows)]
+use tokio::net::windows::named_pipe::{ClientOptions, NamedPipeServer, ServerOptions};
+#[cfg(unix)]
+use tokio::net::{UnixListener, UnixStream};
 use tokio::{
-    io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
-    net::{UnixListener, UnixStream},
+    io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader},
     sync::{Mutex, Notify, mpsc, oneshot},
     time::timeout,
 };
@@ -944,15 +947,54 @@ pub enum AdminRequest {
     Shutdown,
 }
 
+/// Name of the admin endpoint derived from the configured socket path: the
+/// socket path itself on unix, a deterministic named-pipe name on windows.
+pub fn admin_endpoint_name(path: &Path) -> String {
+    #[cfg(unix)]
+    {
+        path.to_string_lossy().into_owned()
+    }
+    #[cfg(windows)]
+    {
+        let hash = blake3::hash(path.to_string_lossy().as_bytes());
+        format!(
+            r"\\.\pipe\intelligence-{}",
+            &hex::encode(hash.as_bytes())[..32]
+        )
+    }
+}
+
+#[cfg(unix)]
+async fn admin_connect(path: &Path) -> io::Result<impl AsyncRead + AsyncWrite + Unpin> {
+    UnixStream::connect(path).await
+}
+
+#[cfg(windows)]
+async fn admin_connect(path: &Path) -> io::Result<impl AsyncRead + AsyncWrite + Unpin> {
+    let name = admin_endpoint_name(path);
+    // ERROR_PIPE_BUSY (231): all pipe instances are momentarily busy; retry.
+    for _ in 0..20 {
+        match ClientOptions::new().open(&name) {
+            Ok(client) => return Ok(client),
+            Err(error) if error.raw_os_error() == Some(231) => {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    ClientOptions::new().open(&name)
+}
+
 pub async fn admin_call(
     path: impl AsRef<Path>,
     request: &AdminRequest,
 ) -> Result<serde_json::Value, NodeError> {
-    let mut stream = UnixStream::connect(path).await?;
+    let stream = admin_connect(path.as_ref()).await?;
+    let (read_half, mut write_half) = tokio::io::split(stream);
     let mut bytes = serde_json::to_vec(request)?;
     bytes.push(b'\n');
-    stream.write_all(&bytes).await?;
-    let mut reader = BufReader::new(stream);
+    write_half.write_all(&bytes).await?;
+    let mut reader = BufReader::new(read_half);
     let mut line = String::new();
     reader.read_line(&mut line).await?;
     let response: AdminWireResponse = serde_json::from_str(&line)?;
@@ -1293,6 +1335,7 @@ impl Node {
         self.network.shutdown().await;
         self.shutdown.notify_waiters();
         self.shutdown.notify_one();
+        #[cfg(unix)]
         if let Some(path) = &self.config.admin_socket {
             let _ = fs::remove_file(path);
         }
@@ -1757,6 +1800,7 @@ impl Node {
         serde_json::to_value(jobs).unwrap_or_else(|_| serde_json::json!([]))
     }
 
+    #[cfg(unix)]
     async fn start_admin(self: &Arc<Self>) -> Result<(), NodeError> {
         let path = self.admin_socket();
         if path.exists() {
@@ -1768,6 +1812,18 @@ impl Node {
         Ok(())
     }
 
+    #[cfg(windows)]
+    async fn start_admin(self: &Arc<Self>) -> Result<(), NodeError> {
+        let name = admin_endpoint_name(self.admin_socket());
+        let server = ServerOptions::new()
+            .first_pipe_instance(true)
+            .create(&name)?;
+        let node = self.clone();
+        tokio::spawn(async move { node.admin_pipe_loop(name, server).await });
+        Ok(())
+    }
+
+    #[cfg(unix)]
     async fn admin_loop(self: Arc<Self>, listener: UnixListener) {
         loop {
             tokio::select! {
@@ -1781,8 +1837,31 @@ impl Node {
         }
     }
 
-    async fn admin_connection(self: Arc<Self>, stream: UnixStream) {
-        let (read_half, mut write_half) = stream.into_split();
+    #[cfg(windows)]
+    async fn admin_pipe_loop(self: Arc<Self>, name: String, mut server: NamedPipeServer) {
+        loop {
+            tokio::select! {
+                connected = server.connect() => {
+                    if connected.is_err() {
+                        break;
+                    }
+                    let node = self.clone();
+                    tokio::spawn(async move { node.admin_connection(server).await });
+                    match ServerOptions::new().create(&name) {
+                        Ok(next) => server = next,
+                        Err(_) => break,
+                    }
+                }
+                _ = self.shutdown.notified() => break,
+            }
+        }
+    }
+
+    async fn admin_connection<S>(self: Arc<Self>, stream: S)
+    where
+        S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    {
+        let (read_half, mut write_half) = tokio::io::split(stream);
         let reader = BufReader::new(read_half);
         let mut line = Vec::with_capacity(4096);
         let response = match reader

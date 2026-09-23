@@ -18,9 +18,20 @@ case "$os:$machine" in
     Linux:aarch64|Linux:arm64)
         artifact_arch=linux-aarch64
         ;;
+    Darwin:x86_64|Darwin:amd64)
+        artifact_arch=macos-x86_64
+        ;;
+    Darwin:arm64|Darwin:aarch64)
+        artifact_arch=macos-aarch64
+        ;;
+    MINGW*|MSYS*|CYGWIN*|Windows*)
+        echo "On Windows use install.ps1 instead:" >&2
+        echo "  irm https://raw.githubusercontent.com/Cowde-Labs/intelligence-network/main/install.ps1 | iex" >&2
+        exit 2
+        ;;
     *)
         echo "Intelligence Network has no release artifact for $os/$machine yet." >&2
-        echo "Build from source or choose a published Linux x86_64/aarch64 release." >&2
+        echo "Build from source or choose a published Linux, macOS or Windows release." >&2
         exit 2
         ;;
 esac

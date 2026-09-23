@@ -456,6 +456,7 @@ dependencies = [
  "hex",
  "intelligence-node",
  "intelligence-protocol",
+ "libc",
  "serde_json",
  "tokio",
  "tracing-subscriber",
@@ -514,6 +515,7 @@ dependencies = [
 name = "intelligence-node"
 version = "1.0.0"
 dependencies = [
+ "blake3",
  "hex",
  "intelligence-intelligence",
  "intelligence-network",

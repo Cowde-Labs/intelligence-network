@@ -20,13 +20,21 @@ marketplace. Nodes cooperate because their operators point them at each other.
 
 ## Quickstart
 
-Linux x86_64 or aarch64. The installer fetches the release binary and its
+Linux, macOS and Windows (x86_64 and arm64; Windows arm64 builds from source).
+The installer fetches the release binary and its
 checksum from GitHub Releases, verifies the checksum, and puts one file in
 `~/.local/bin`. Nothing else is installed.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Cowde-Labs/intelligence-network/main/install.sh | sh
 export PATH="$HOME/.local/bin:$PATH"
+```
+
+On Windows (PowerShell):
+
+```powershell
+irm https://raw.githubusercontent.com/Cowde-Labs/intelligence-network/main/install.ps1 | iex
+```
 
 intelligence up              # create an identity, write a config, start the node in the background
 intelligence status          # health, peers, jobs, resource counters
@@ -134,6 +142,12 @@ model must fit on one worker         NO
 curl -fsSL https://raw.githubusercontent.com/Cowde-Labs/intelligence-network/main/install.sh | sh
 ```
 
+On Windows (PowerShell):
+
+```powershell
+irm https://raw.githubusercontent.com/Cowde-Labs/intelligence-network/main/install.ps1 | iex
+```
+
 Pin a version with `INTELLIGENCE_VERSION=v1.0.0`, or mirror the artifacts and
 set `INTELLIGENCE_RELEASE_BASE_URL`. The script refuses to install on a
 checksum mismatch or an archive with unsafe paths.
@@ -156,7 +170,7 @@ backend; it does not pull in any vendor SDK.
 ### As a service
 
 ```bash
-intelligence service install    # per-user systemd unit, no root
+intelligence service install    # systemd user unit on Linux, launchd agent on macOS, scheduled task on Windows — no root
 ```
 
 For a system-wide deployment under a restricted service account see
@@ -190,8 +204,8 @@ are down the node says so and carries on, and `--no-default-seeds` or
 
 ## Models
 
-The node never downloads weights. You bring the file, the node hashes it and
-tracks it as a content-addressed artifact.
+The node never downloads weights. You bring the file — any file type is
+accepted — the node hashes it and tracks it as a content-addressed artifact.
 
 ```bash
 intelligence model list                                     # list files in the standard model dirs
@@ -370,8 +384,9 @@ cli           the intelligence binary
 ```
 
 The wire protocol is versioned (currently `1.6`) and every peer-facing parser
-is bounded and fuzzed. The CLI talks to a running node over a Unix admin
-socket in the state directory; nothing listens on TCP.
+is bounded and fuzzed. The CLI talks to a running node over a local admin
+channel — a Unix socket on Linux/macOS, a named pipe on Windows; nothing
+listens on TCP.
 
 Design rules the codebase holds itself to: no central control plane, no
 mandatory first-party infrastructure, no economic layer, and no protocol
@@ -411,9 +426,13 @@ Be clear-eyed about where this is:
 - **Accelerators are advertised, not executed.** With the `cuda`/`rocm`/`metal`
   features the node detects and advertises the backend for planning. Actual
   GPU inference happens inside your llama.cpp process, not in the node.
-- **Linux first.** Release binaries are Linux x86_64 and aarch64. Process
-  isolation and `service install` depend on bubblewrap and systemd. Other
-  platforms build from source without those guarantees.
+- **Platform coverage.** Release binaries ship for Linux, macOS and Windows.
+  The CLI talks to the node over a Unix socket on Linux/macOS and a named pipe
+  on Windows. Sandboxed *remote* execution of external processes (bubblewrap)
+  and the systemd unit are Linux-only, so on macOS/Windows a
+  `llama_cpp`/`process` capability can only be used locally (`public = false`);
+  `service install` uses launchd on macOS and Task Scheduler on Windows.
+  macOS/Windows are verified by CI, not yet by long-running deployments.
 
 Report vulnerabilities privately to the maintainers before publishing.
 
