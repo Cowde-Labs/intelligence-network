@@ -882,7 +882,9 @@ fn apply_unix_limits(command: &mut Command, config: &RuntimeConfig) {
             if libc::setrlimit(libc::RLIMIT_CPU, &cpu) != 0 {
                 return Err(io::Error::last_os_error());
             }
-            if libc::setrlimit(libc::RLIMIT_AS, &memory) != 0 {
+            // Darwin rejects lowering RLIMIT_AS (EINVAL); the address-space
+            // ceiling is Linux-only and applied best-effort elsewhere.
+            if libc::setrlimit(libc::RLIMIT_AS, &memory) != 0 && cfg!(target_os = "linux") {
                 return Err(io::Error::last_os_error());
             }
             Ok(())

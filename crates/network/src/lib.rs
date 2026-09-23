@@ -1467,7 +1467,7 @@ impl NetworkHandle {
         let Some(listen_addr) = listen_addr else {
             return;
         };
-        let released = Instant::now() + Duration::from_secs(2);
+        let released = Instant::now() + Duration::from_secs(5);
         while Instant::now() < released {
             match std::net::UdpSocket::bind(listen_addr) {
                 Ok(_) => return,
@@ -1490,8 +1490,21 @@ pub async fn start(
 ) -> Result<NetworkHandle, NetworkError> {
     config.validate()?;
     let (server_config, client_config) = transport_configs().map_err(NetworkError::Quic)?;
-    let mut endpoint = Endpoint::server(server_config, config.listen_addr)
-        .map_err(|error| NetworkError::Quic(error.to_string()))?;
+    // A just-shutdown endpoint may still hold the UDP socket briefly, so a
+    // same-address restart retries AddrInUse until the shutdown bound lapses.
+    let bind_deadline = Instant::now() + Duration::from_secs(5);
+    let mut endpoint = loop {
+        match Endpoint::server(server_config.clone(), config.listen_addr) {
+            Ok(endpoint) => break endpoint,
+            Err(error) if error.kind() == io::ErrorKind::AddrInUse => {
+                if Instant::now() >= bind_deadline {
+                    return Err(NetworkError::Quic(error.to_string()));
+                }
+                sleep(Duration::from_millis(50)).await;
+            }
+            Err(error) => return Err(NetworkError::Quic(error.to_string())),
+        }
+    };
     endpoint.set_default_client_config(client_config);
     let identity = Arc::new(identity);
     let store = Arc::new(store);

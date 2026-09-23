@@ -48,6 +48,43 @@ async fn wait_connected(receiver: &mut mpsc::Receiver<NetworkEvent>) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn restart_on_same_address_succeeds_repeatedly() {
+    let root_dir = root("restart");
+    for _ in 0..5 {
+        let address = free_addr();
+        let (events_tx, _events) = mpsc::channel(64);
+        let config = NetworkConfig {
+            listen_addr: address,
+            advertise_addr: address.to_string(),
+            ..NetworkConfig::default()
+        };
+        let identity = Identity::load_or_generate(root_dir.join("identity.key")).unwrap();
+        let node = start(
+            config.clone(),
+            identity,
+            LocalStore::open(root_dir.join("state"), 16 * 1024 * 1024, 1024 * 1024).unwrap(),
+            events_tx,
+        )
+        .await
+        .unwrap();
+        node.shutdown().await;
+        let (events_tx, _events) = mpsc::channel(64);
+        let identity = Identity::load_or_generate(root_dir.join("identity.key")).unwrap();
+        start(
+            config,
+            identity,
+            LocalStore::open(root_dir.join("state"), 16 * 1024 * 1024, 1024 * 1024).unwrap(),
+            events_tx,
+        )
+        .await
+        .expect("same-address restart")
+        .shutdown()
+        .await;
+    }
+    let _ = fs::remove_dir_all(root_dir);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn two_nodes_bind_identity_over_encrypted_transport() {
     let address_a = free_addr();
     let address_b = free_addr();

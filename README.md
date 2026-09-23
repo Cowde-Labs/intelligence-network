@@ -432,7 +432,10 @@ Be clear-eyed about where this is:
   and the systemd unit are Linux-only, so on macOS/Windows a
   `llama_cpp`/`process` capability can only be used locally (`public = false`);
   `service install` uses launchd on macOS and Task Scheduler on Windows.
-  macOS/Windows are verified by CI, not yet by long-running deployments.
+  The per-process memory ceiling for external `process`/`llama_cpp`
+  capabilities is enforced only on Linux; on macOS only the CPU-time limit
+  and the job timeout apply. macOS/Windows are verified by CI, not yet by
+  long-running deployments.
 
 Report vulnerabilities privately to the maintainers before publishing.
 

@@ -36,7 +36,10 @@ trust service is not required by the protocol.
 The local evidence model cannot prove one human per identity. Results depend on
 the tested attacker fraction, topology, churn, resource limits, and local
 policy. Public-Internet botnets, geographic diversity, unknown implementation
-flaws, and independent-operator behavior require external validation.
+flaws, and independent-operator behavior require external validation. The
+per-process memory ceiling for external `process`/`llama_cpp` capabilities is
+enforced only on Linux; on macOS only the CPU-time limit and the job timeout
+apply.
 
 Report vulnerabilities privately to the repository maintainers before
 publishing an exploit or sensitive material.
