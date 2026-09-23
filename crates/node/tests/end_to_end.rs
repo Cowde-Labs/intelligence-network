@@ -15,23 +15,34 @@ use tokio::time::{Duration, Instant, sleep, timeout};
 
 #[cfg(unix)]
 fn require_bubblewrap() {
-    match std::process::Command::new("bwrap")
-        .args([
-            "--ro-bind",
-            "/",
-            "/",
-            "--dev",
-            "/dev",
-            "--proc",
-            "/proc",
-            "--unshare-all",
-            "--die-with-parent",
-            "--",
-            "/bin/true",
-        ])
-        .status()
-    {
-        Ok(status) if status.success() => {}
+    // Mirror the runtime's namespace and mount table so a host that cannot
+    // run the real sandbox fails here with a direct message instead of as
+    // a job that never starts.
+    let mut command = std::process::Command::new("bwrap");
+    command.args([
+        "--die-with-parent",
+        "--unshare-all",
+        "--new-session",
+        "--proc",
+        "/proc",
+        "--dev",
+        "/dev",
+        "--tmpfs",
+        "/tmp",
+        "--ro-bind",
+        "/usr",
+        "/usr",
+        "--ro-bind",
+        "/bin",
+        "/bin",
+    ]);
+    for library_root in ["/lib", "/lib64"] {
+        if std::path::Path::new(library_root).exists() {
+            command.args(["--ro-bind", library_root, library_root]);
+        }
+    }
+    match command.args(["--", "/bin/sh", "-c", "true"]).output() {
+        Ok(output) if output.status.success() => {}
         outcome => panic!(
             "these tests execute jobs under bubblewrap; `bwrap` must be installed and permitted to create user namespaces: {outcome:?}"
         ),

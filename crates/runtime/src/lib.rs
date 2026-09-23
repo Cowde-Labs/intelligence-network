@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
     io,
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::Stdio,
     sync::{
         Arc,
@@ -678,13 +678,16 @@ async fn run_process(
                 .arg("/usr")
                 .arg("--ro-bind")
                 .arg("/bin")
-                .arg("/bin")
-                .arg("--ro-bind")
-                .arg("/usr/lib")
-                .arg("/lib")
-                .arg("--ro-bind")
-                .arg("/usr/lib")
-                .arg("/lib64");
+                .arg("/bin");
+            // Bind the host's own /lib and /lib64 rather than assuming they
+            // alias /usr/lib.  On Debian-family layouts /lib64 resolves to
+            // /usr/lib64, which holds the ELF interpreter; aliasing it to
+            // /usr/lib leaves every dynamically linked program unexecutable.
+            for library_root in ["/lib", "/lib64"] {
+                if Path::new(library_root).exists() {
+                    command.arg("--ro-bind").arg(library_root).arg(library_root);
+                }
+            }
             if let Some(model_path) = model_path.filter(|path| path.is_absolute()) {
                 command.arg("--ro-bind").arg(model_path).arg(model_path);
             }

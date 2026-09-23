@@ -20,11 +20,17 @@ jobs:
         run: rustc --version && cargo --version
       - name: Sandbox dependency
         # The real-process job tests execute untrusted capabilities under
-        # bubblewrap; the runner image does not ship it.
+        # bubblewrap. The runner image ships neither the binary nor
+        # permission for unprivileged user namespaces (Ubuntu 24.04 confines
+        # them through AppArmor by default), and the sandbox needs both.
+        # The smoke test uses the runtime's own namespace and mount table.
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends bubblewrap
-          bwrap --ro-bind / / --dev /dev --proc /proc --unshare-all --die-with-parent -- /bin/true
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          bwrap --die-with-parent --unshare-all --new-session --proc /proc --dev /dev --tmpfs /tmp \
+            --ro-bind /usr /usr --ro-bind /bin /bin --ro-bind /lib /lib --ro-bind /lib64 /lib64 \
+            -- /bin/sh -c 'echo sandbox ok'
       - name: Format
         run: cargo fmt --all -- --check
       - name: Tests
