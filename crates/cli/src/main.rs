@@ -1804,8 +1804,12 @@ async fn down_node(path: &Path, json: bool) -> Result<(), Box<dyn std::error::Er
     .await
     {
         let deadline = Instant::now() + Duration::from_secs(5);
+        // The node may bind a /tmp fallback when the configured socket path
+        // exceeds the unix length limit; watch the resolved path.
         #[cfg(unix)]
-        while socket.exists() && Instant::now() < deadline {
+        let socket_file = intelligence_node::admin_socket_path(&socket);
+        #[cfg(unix)]
+        while socket_file.exists() && Instant::now() < deadline {
             sleep(Duration::from_millis(100)).await;
         }
         // Named pipes leave no filesystem entry; poll the admin channel until

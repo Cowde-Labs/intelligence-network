@@ -964,9 +964,26 @@ pub fn admin_endpoint_name(path: &Path) -> String {
     }
 }
 
+/// Filesystem path the unix admin socket is actually bound to. Unix socket
+/// paths are limited to ~108 bytes (104 on macOS), so a configured path that
+/// would exceed the limit is replaced by a deterministic `/tmp` fallback;
+/// short paths are used unchanged.
+#[cfg(unix)]
+pub fn admin_socket_path(configured: &Path) -> PathBuf {
+    const SUN_PATH_LIMIT: usize = 100;
+    if configured.as_os_str().len() < SUN_PATH_LIMIT {
+        return configured.to_path_buf();
+    }
+    let hash = blake3::hash(configured.to_string_lossy().as_bytes());
+    PathBuf::from(format!(
+        "/tmp/intelligence-{}.sock",
+        &hex::encode(hash.as_bytes())[..16]
+    ))
+}
+
 #[cfg(unix)]
 async fn admin_connect(path: &Path) -> io::Result<impl AsyncRead + AsyncWrite + Unpin> {
-    UnixStream::connect(path).await
+    UnixStream::connect(admin_socket_path(path)).await
 }
 
 #[cfg(windows)]
@@ -1337,7 +1354,7 @@ impl Node {
         self.shutdown.notify_one();
         #[cfg(unix)]
         if let Some(path) = &self.config.admin_socket {
-            let _ = fs::remove_file(path);
+            let _ = fs::remove_file(admin_socket_path(path));
         }
     }
 
@@ -1802,11 +1819,19 @@ impl Node {
 
     #[cfg(unix)]
     async fn start_admin(self: &Arc<Self>) -> Result<(), NodeError> {
-        let path = self.admin_socket();
-        if path.exists() {
-            fs::remove_file(path)?;
+        let configured = self.admin_socket();
+        let path = admin_socket_path(configured);
+        if path != configured {
+            tracing::info!(
+                configured = %configured.display(),
+                bound = %path.display(),
+                "admin socket path exceeds the unix length limit; using fallback"
+            );
         }
-        let listener = UnixListener::bind(path)?;
+        if path.exists() {
+            fs::remove_file(&path)?;
+        }
+        let listener = UnixListener::bind(&path)?;
         let node = self.clone();
         tokio::spawn(async move { node.admin_loop(listener).await });
         Ok(())
@@ -4885,4 +4910,29 @@ fn default_memory_limit() -> u64 {
 
 fn default_cpu_limit() -> u64 {
     1000
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::admin_socket_path;
+    use std::path::Path;
+
+    #[test]
+    fn admin_socket_path_keeps_short_paths() {
+        let short = Path::new("/tmp/node.sock");
+        assert_eq!(admin_socket_path(short), short);
+    }
+
+    #[test]
+    fn admin_socket_path_falls_back_for_long_paths() {
+        let long_string = format!("/{}/node.sock", "a".repeat(140));
+        let long = Path::new(&long_string);
+        assert!(long.as_os_str().len() >= 100);
+        let resolved = admin_socket_path(long);
+        assert!(resolved.as_os_str().len() < 100);
+        let resolved_str = resolved.to_str().unwrap();
+        assert!(resolved_str.starts_with("/tmp/intelligence-"));
+        assert!(resolved_str.ends_with(".sock"));
+        assert_eq!(resolved, admin_socket_path(long));
+    }
 }
