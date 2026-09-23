@@ -18,6 +18,13 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
       - name: Toolchain
         run: rustc --version && cargo --version
+      - name: Sandbox dependency
+        # The real-process job tests execute untrusted capabilities under
+        # bubblewrap; the runner image does not ship it.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends bubblewrap
+          bwrap --ro-bind / / --dev /dev --proc /proc --unshare-all --die-with-parent -- /bin/true
       - name: Format
         run: cargo fmt --all -- --check
       - name: Tests

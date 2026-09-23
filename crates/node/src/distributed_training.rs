@@ -42,6 +42,7 @@ const V3_ELECTION_RETRY_DELAY: Duration = Duration::from_millis(100);
 const V3_STARTUP_COORDINATOR_RECHECKS: usize = 4;
 const V3_STARTUP_COORDINATOR_RECHECK_DELAY: Duration = Duration::from_millis(500);
 const V3_STARTUP_ADMISSION_TIMEOUT: Duration = Duration::from_secs(30);
+const V3_STARTUP_RESEND_INTERVAL: Duration = Duration::from_secs(2);
 const V3_MAX_DELTA: i64 = 10 * TRAINING_SCALE;
 
 fn log_election_event(message: std::fmt::Arguments<'_>) {
@@ -411,8 +412,10 @@ async fn start_coordinator(
 
     let mut acknowledged = HashSet::new();
     let admission_deadline = Instant::now() + V3_STARTUP_ADMISSION_TIMEOUT;
+    let mut next_resend = Instant::now() + V3_STARTUP_RESEND_INTERVAL;
     while acknowledged.len() < expected_workers.len() {
-        let remaining = admission_deadline.saturating_duration_since(Instant::now());
+        let now = Instant::now();
+        let remaining = admission_deadline.saturating_duration_since(now);
         if remaining.is_zero() {
             let missing = expected_workers
                 .difference(&acknowledged)
@@ -424,7 +427,28 @@ async fn start_coordinator(
                 missing.join(", ")
             )));
         }
-        let Some(event) = timeout(remaining, receiver.recv()).await.ok().flatten() else {
+        // A Start frame or its ACK can be lost when the transport replaces a
+        // duplicate connection without reporting a disconnect for the peer.
+        // Start is idempotent (an admitted worker simply ACKs again), so the
+        // barrier retransmits to the workers that are still missing instead
+        // of idling until the admission deadline.
+        if now >= next_resend {
+            for (worker, worker_start) in &worker_starts {
+                if acknowledged.contains(worker) {
+                    continue;
+                }
+                let _ = node
+                    .network
+                    .send_to(
+                        *worker,
+                        Message::Training(TrainingMessage::Start(worker_start.clone())),
+                    )
+                    .await;
+            }
+            next_resend = Instant::now() + V3_STARTUP_RESEND_INTERVAL;
+        }
+        let wait = remaining.min(next_resend.saturating_duration_since(Instant::now()));
+        let Some(event) = timeout(wait, receiver.recv()).await.ok().flatten() else {
             continue;
         };
         match event {
@@ -1609,9 +1633,15 @@ async fn wait_for_aggregate(
                 ));
             }
             V3Inbound::PeerDisconnected(peer) => {
-                context.failed.insert(peer);
                 if peer == context.coordinator {
+                    context.failed.insert(peer);
                     return Ok(None);
+                }
+                // Canonical QUIC connection replacement raises a disconnect
+                // for a peer that is still reachable.  Only a peer that fails
+                // its bounded restore attempt leaves the live participant set.
+                if !restore_training_peer(node, context, peer).await {
+                    context.failed.insert(peer);
                 }
             }
             _ => {}
@@ -2746,8 +2776,23 @@ async fn broadcast_state_and_wait(
                 let _ = handle_election(node, context, peer, election).await;
                 return false;
             }
-            V3Inbound::PeerDisconnected(peer) => {
-                context.failed.insert(peer);
+            V3Inbound::PeerDisconnected(peer) if expected_acks.contains(&peer) => {
+                // The disconnect may have aborted the writer that carried this
+                // State frame.  A peer that is still reachable gets the same
+                // idempotent frame again and re-acknowledges; only a peer
+                // that fails its bounded restore attempt is excluded.
+                if restore_training_peer(node, context, peer).await {
+                    let _ = timeout(
+                        V3_MESSAGE_TIMEOUT,
+                        node.network.send_to(
+                            peer,
+                            Message::Training(TrainingMessage::State(state.clone())),
+                        ),
+                    )
+                    .await;
+                } else {
+                    context.failed.insert(peer);
+                }
             }
             _ => {}
         }
@@ -2851,14 +2896,28 @@ async fn broadcast_checkpoint_and_wait(
                     expected_acks
                 ));
             }
-            V3Inbound::PeerDisconnected(peer) => {
-                // A peer that disappears while a checkpoint is being
-                // committed is no longer part of the live acknowledgment
-                // set. It remains an artifact provider only if its
-                // already-verified shard exists; the next training window
-                // will use the normal bounded recovery path for its role.
-                expected_acks.remove(&peer);
-                context.failed.insert(peer);
+            V3Inbound::PeerDisconnected(peer) if expected_acks.contains(&peer) => {
+                // A disconnect raised by canonical connection replacement is
+                // not peer death: a reachable peer gets the idempotent commit
+                // again and stays in the acknowledgment set.  A peer that
+                // fails its bounded restore attempt is no longer part of the
+                // live acknowledgment set. It remains an artifact provider
+                // only if its already-verified shard exists; the next training
+                // window will use the normal bounded recovery path for its
+                // role.
+                if restore_training_peer(node, context, peer).await {
+                    let _ = timeout(
+                        V3_MESSAGE_TIMEOUT,
+                        node.network.send_to(
+                            peer,
+                            Message::Training(TrainingMessage::CheckpointCommit(commit.clone())),
+                        ),
+                    )
+                    .await;
+                } else {
+                    expected_acks.remove(&peer);
+                    context.failed.insert(peer);
+                }
             }
             _ => {}
         }

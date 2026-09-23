@@ -300,6 +300,12 @@ pub struct LocalSecurityState {
     events: VecDeque<SecurityEvent>,
     #[serde(default)]
     replay: BTreeMap<ReplayKey, ArtifactId>,
+    /// Digest of the first conflicting payload rejected as an equivocation
+    /// for a stream position.  Exact re-submissions of that payload are
+    /// classified as duplicates regardless of the order in which the
+    /// admitted and conflicting frames were processed.
+    #[serde(default)]
+    rejected_replay: BTreeMap<ReplayKey, ArtifactId>,
     #[serde(default)]
     latest: BTreeMap<StreamKey, (u64, u64)>,
     #[serde(default)]
@@ -329,6 +335,7 @@ impl LocalSecurityState {
             policy,
             events: VecDeque::new(),
             replay: BTreeMap::new(),
+            rejected_replay: BTreeMap::new(),
             latest: BTreeMap::new(),
             contexts: BTreeMap::new(),
             claims: BTreeMap::new(),
@@ -351,6 +358,7 @@ impl LocalSecurityState {
         if self.local_node == NodeId::default()
             || self.events.len() > self.policy.max_events
             || self.replay.len() > self.policy.max_replay_entries
+            || self.rejected_replay.len() > self.policy.max_replay_entries
             || self.claims.len() > self.policy.max_claims
             || self.authenticated_claims.len() > self.policy.max_claims
         {
@@ -464,16 +472,6 @@ impl LocalSecurityState {
             );
             return Err(SecurityError::UnauthorizedTraining);
         }
-        if self.is_quarantined(contribution.worker, now) {
-            self.event(
-                now,
-                Some(contribution.worker),
-                SecurityEventKind::TrainingUpdateRejected,
-                "training_update",
-                "worker is locally quarantined",
-            );
-            return Err(SecurityError::Quarantined);
-        }
         if contribution.job_id == JobId::default()
             || contribution.branch == ArtifactId::default()
             || contribution.plan_generation == 0
@@ -494,6 +492,40 @@ impl LocalSecurityState {
                 "lineage, vector, or magnitude bound failed",
             );
             return Err(SecurityError::TrainingBounds);
+        }
+        // Exact re-submission is a property of the frame, not of the sender's
+        // current standing.  Concurrent handlers may process an equivocating
+        // frame (which quarantines the worker) before the replay of an
+        // admitted frame; the replay must still be classified as a
+        // duplicate so the ledger records the same evidence in every order.
+        let digest = contribution_digest(contribution);
+        let key = ReplayKey {
+            job_id: contribution.job_id,
+            worker: contribution.worker,
+            branch: contribution.branch,
+            generation: contribution.generation,
+            sequence: contribution.sequence,
+        };
+        if self.replay.get(&key) == Some(&digest) || self.rejected_replay.get(&key) == Some(&digest)
+        {
+            self.event(
+                now,
+                Some(contribution.worker),
+                SecurityEventKind::DuplicateContributionRejected,
+                "training_update",
+                "same signed contribution was submitted twice",
+            );
+            return Err(SecurityError::DuplicateTraining);
+        }
+        if self.is_quarantined(contribution.worker, now) {
+            self.event(
+                now,
+                Some(contribution.worker),
+                SecurityEventKind::TrainingUpdateRejected,
+                "training_update",
+                "worker is locally quarantined",
+            );
+            return Err(SecurityError::Quarantined);
         }
         self.observe_context(
             TrainingContext {
@@ -522,25 +554,11 @@ impl LocalSecurityState {
             );
             return Err(SecurityError::StaleTraining);
         }
-        let digest = contribution_digest(contribution);
-        let key = ReplayKey {
-            job_id: contribution.job_id,
-            worker: contribution.worker,
-            branch: contribution.branch,
-            generation: contribution.generation,
-            sequence: contribution.sequence,
-        };
-        if let Some(previous) = self.replay.get(&key).copied() {
-            if previous == digest {
-                self.event(
-                    now,
-                    Some(contribution.worker),
-                    SecurityEventKind::DuplicateContributionRejected,
-                    "training_update",
-                    "same signed contribution was submitted twice",
-                );
-                return Err(SecurityError::DuplicateTraining);
-            }
+        if self.replay.contains_key(&key) {
+            // The exact-digest match was already excluded above, so this is a
+            // different payload at an admitted stream position.
+            bound_map(&mut self.rejected_replay, self.policy.max_replay_entries);
+            self.rejected_replay.entry(key).or_insert(digest);
             self.quarantine(
                 contribution.worker,
                 now,
@@ -869,12 +887,7 @@ impl LocalSecurityState {
     }
 
     fn bound_replay(&mut self) {
-        while self.replay.len() >= self.policy.max_replay_entries {
-            let Some(key) = self.replay.keys().next().cloned() else {
-                break;
-            };
-            self.replay.remove(&key);
-        }
+        bound_map(&mut self.replay, self.policy.max_replay_entries);
     }
 
     fn event(
@@ -958,6 +971,15 @@ pub fn verify_claim(claim: &SignedStateClaim, now: u64) -> Result<(), SecurityEr
         .map_err(|_| SecurityError::InvalidEquivocationProof)?;
     key.verify(&bytes, &signature)
         .map_err(|_| SecurityError::InvalidEquivocationProof)
+}
+
+fn bound_map<K: Ord + Clone, V>(map: &mut BTreeMap<K, V>, max_entries: usize) {
+    while map.len() >= max_entries {
+        let Some(key) = map.keys().next().cloned() else {
+            break;
+        };
+        map.remove(&key);
+    }
 }
 
 fn contribution_digest(contribution: &TrainingContribution) -> ArtifactId {
@@ -1179,6 +1201,63 @@ mod tests {
         );
         assert!(state.is_quarantined(first.worker, 10));
         assert!(!state.is_quarantined(NodeId::from_bytes([2; 32]), 10));
+    }
+
+    #[test]
+    fn exact_replay_is_a_duplicate_in_every_processing_order() {
+        let first = contribution(1, 1, 10);
+        let mut conflicting = first.clone();
+        conflicting.values = vec![11, 10];
+        let members = [first.worker];
+        let has = |state: &LocalSecurityState, kind| state.events().any(|event| event.kind == kind);
+
+        // admitted, conflicting (quarantines), then exact replay of admitted
+        let mut state =
+            LocalSecurityState::new(NodeId::from_bytes([9; 32]), SecurityPolicy::default())
+                .unwrap();
+        state.admit_training_update(&first, &members, 10).unwrap();
+        assert_eq!(
+            state.admit_training_update(&conflicting, &members, 10),
+            Err(SecurityError::TrainingEquivocation)
+        );
+        assert_eq!(
+            state.admit_training_update(&first, &members, 10),
+            Err(SecurityError::DuplicateTraining)
+        );
+        assert!(has(
+            &state,
+            SecurityEventKind::DuplicateContributionRejected
+        ));
+        assert!(has(&state, SecurityEventKind::EquivocationDetected));
+
+        // conflicting admitted first, original rejected, then original replayed
+        let mut state =
+            LocalSecurityState::new(NodeId::from_bytes([9; 32]), SecurityPolicy::default())
+                .unwrap();
+        state
+            .admit_training_update(&conflicting, &members, 10)
+            .unwrap();
+        assert_eq!(
+            state.admit_training_update(&first, &members, 10),
+            Err(SecurityError::TrainingEquivocation)
+        );
+        assert_eq!(
+            state.admit_training_update(&first, &members, 10),
+            Err(SecurityError::DuplicateTraining)
+        );
+        assert!(has(
+            &state,
+            SecurityEventKind::DuplicateContributionRejected
+        ));
+        assert!(has(&state, SecurityEventKind::EquivocationDetected));
+
+        // a quarantined worker's new frame is still rejected as quarantined
+        let mut fresh = first.clone();
+        fresh.sequence = 2;
+        assert_eq!(
+            state.admit_training_update(&fresh, &members, 10),
+            Err(SecurityError::Quarantined)
+        );
     }
 
     #[test]

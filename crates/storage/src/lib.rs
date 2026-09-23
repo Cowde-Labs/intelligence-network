@@ -147,9 +147,20 @@ impl LocalStore {
             let mut total: u64 = 0;
             for entry in fs::read_dir(path)? {
                 let entry = entry?;
-                let metadata = entry.metadata()?;
+                // Concurrent atomic writes rename temp files away between the
+                // directory listing and this stat; a vanished entry is not an
+                // accounting error, it simply contributes 0 bytes.
+                let metadata = match entry.metadata() {
+                    Ok(metadata) => metadata,
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+                    Err(error) => return Err(error),
+                };
                 if metadata.is_dir() {
-                    total = total.saturating_add(walk(&entry.path())?);
+                    match walk(&entry.path()) {
+                        Ok(size) => total = total.saturating_add(size),
+                        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                        Err(error) => return Err(error),
+                    }
                 } else if metadata.is_file() {
                     total = total.saturating_add(metadata.len());
                 }
@@ -437,7 +448,11 @@ impl LocalStore {
         let mut total = 0u64;
         for entry in fs::read_dir(&quarantine)? {
             let entry = entry?;
-            let metadata = entry.metadata()?;
+            let metadata = match entry.metadata() {
+                Ok(metadata) => metadata,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(StorageError::Io(error)),
+            };
             if !metadata.is_file() {
                 continue;
             }
@@ -1019,6 +1034,34 @@ mod tests {
         assert_eq!(store.load_dht_records().unwrap(), vec![record]);
         assert_eq!(store.load_dht_contacts().unwrap(), vec![contact]);
         assert_eq!(store.load_evidence().unwrap(), vec![evidence]);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn concurrent_state_writes_do_not_fail_quota_accounting() {
+        let root = temp_root();
+        let store = std::sync::Arc::new(
+            LocalStore::open(&root, 32 * 1024 * 1024, 4 * 1024 * 1024).unwrap(),
+        );
+        let mut handles: Vec<std::thread::JoinHandle<Result<(), StorageError>>> = Vec::new();
+        for thread in 0..8 {
+            let store = store.clone();
+            handles.push(std::thread::spawn(move || {
+                for i in 0..300 {
+                    store.write_json(
+                        &format!("stress-{thread}-{}.json", i % 4),
+                        &serde_json::json!({"thread": thread, "i": i}),
+                    )?;
+                    if i % 3 == 0 {
+                        store.put_artifact(format!("artifact-{thread}-{i}").as_bytes())?;
+                    }
+                }
+                Ok(())
+            }));
+        }
+        for handle in handles {
+            handle.join().unwrap().expect("concurrent write failed");
+        }
         let _ = fs::remove_dir_all(root);
     }
 }

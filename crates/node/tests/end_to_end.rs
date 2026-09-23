@@ -6,19 +6,46 @@ use intelligence_storage::{LocalStore, PersistedJob};
 use std::{
     collections::{BTreeMap, HashSet},
     fs,
-    net::{SocketAddr, TcpListener},
+    net::{SocketAddr, UdpSocket},
     path::PathBuf,
     sync::{Mutex, OnceLock},
     time::{SystemTime, UNIX_EPOCH},
 };
 use tokio::time::{Duration, Instant, sleep, timeout};
 
+#[cfg(unix)]
+fn require_bubblewrap() {
+    match std::process::Command::new("bwrap")
+        .args([
+            "--ro-bind",
+            "/",
+            "/",
+            "--dev",
+            "/dev",
+            "--proc",
+            "/proc",
+            "--unshare-all",
+            "--die-with-parent",
+            "--",
+            "/bin/true",
+        ])
+        .status()
+    {
+        Ok(status) if status.success() => {}
+        outcome => panic!(
+            "these tests execute jobs under bubblewrap; `bwrap` must be installed and permitted to create user namespaces: {outcome:?}"
+        ),
+    }
+}
+
 fn free_addr() -> SocketAddr {
     static USED_PORTS: OnceLock<Mutex<HashSet<u16>>> = OnceLock::new();
     let used_ports = USED_PORTS.get_or_init(|| Mutex::new(HashSet::new()));
     for _ in 0..1_000 {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let address = listener.local_addr().unwrap();
+        // Nodes bind QUIC over UDP; probe the same protocol so a TCP-free
+        // port that is still held by another UDP socket is never handed out.
+        let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let address = socket.local_addr().unwrap();
         if used_ports.lock().unwrap().insert(address.port()) {
             return address;
         }
@@ -501,6 +528,7 @@ async fn remote_evaluation_returns_local_evidence() {
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
 async fn remote_job_can_be_cancelled_by_its_known_id() {
+    require_bubblewrap();
     let root_requester = root("cancel-requester");
     let root_worker = root("cancel-worker");
     let address_requester = free_addr();
@@ -537,7 +565,7 @@ async fn remote_job_can_be_cancelled_by_its_known_id() {
     let cancelled = admin_call(requester.admin_socket(), &AdminRequest::Cancel { job_id })
         .await
         .unwrap();
-    assert_eq!(cancelled["cancelled"], true);
+    assert_eq!(cancelled["cancelled"], true, "cancel response: {cancelled}");
     let result = timeout(Duration::from_secs(5), pending)
         .await
         .unwrap()
@@ -555,6 +583,7 @@ async fn remote_job_can_be_cancelled_by_its_known_id() {
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
 async fn duplicate_inflight_job_is_executed_at_most_once() {
+    require_bubblewrap();
     let root_requester = root("duplicate-requester");
     let root_worker = root("duplicate-worker");
     let address_requester = free_addr();
@@ -614,7 +643,8 @@ async fn duplicate_inflight_job_is_executed_at_most_once() {
             .is_ok_and(|value| value["state"] == "Succeeded")
             || second_result
                 .as_ref()
-                .is_ok_and(|value| value["state"] == "Succeeded")
+                .is_ok_and(|value| value["state"] == "Succeeded"),
+        "neither duplicate submission succeeded: first={first_result:?} second={second_result:?}"
     );
     assert!(started_at.elapsed() < Duration::from_millis(1800));
 

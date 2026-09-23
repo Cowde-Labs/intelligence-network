@@ -9755,30 +9755,34 @@ async fn receive_collective_contribution(
                 generation: contribution.generation,
                 group_id,
                 aggregator: node.node_id(),
-                values,
+                values: values.clone(),
                 contributors,
                 expected_groups,
                 reply_to,
             }),
         )
         .await?;
-    } else {
-        finish_collective_group(
-            node,
-            V4CollectiveCompletion {
-                request_id: key,
-                job_id: contribution.job_id,
-                plan_generation: contribution.plan_generation,
-                generation: contribution.generation,
-                group_id,
-                values,
-                contributors,
-                expected_groups,
-                reply_to,
-            },
-        )
-        .await?;
     }
+    // Every group aggregator is also an independent root of the reduction.
+    // The peer root's aggregate may already have been recorded before the
+    // local group completed (network reordering); the local completion must
+    // therefore run the same completeness check as an incoming aggregate,
+    // otherwise this root never reports its result.
+    finish_collective_group(
+        node,
+        V4CollectiveCompletion {
+            request_id: key,
+            job_id: contribution.job_id,
+            plan_generation: contribution.plan_generation,
+            generation: contribution.generation,
+            group_id,
+            values,
+            contributors,
+            expected_groups,
+            reply_to,
+        },
+    )
+    .await?;
     Ok(())
 }
 
@@ -10335,7 +10339,12 @@ fn prune_checkpoint_history(node: &Node, job_id: JobId, retain: usize) -> Result
     }
     files.sort_by_key(|left| std::cmp::Reverse(left.0));
     for (_, path) in files.into_iter().skip(retain) {
-        fs::remove_file(path)?;
+        // Two concurrent prunes may race to delete the same checkpoint.
+        match fs::remove_file(path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
     }
     Ok(())
 }
