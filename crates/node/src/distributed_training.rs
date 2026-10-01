@@ -644,10 +644,11 @@ pub(crate) async fn accept_start(
             "V3 start is not authorized for this worker".to_string(),
         ));
     }
-    if start.shard_state_bytes > node.config.training_memory_bytes {
+    let memory_budget = node.config.effective_training_memory_bytes();
+    if start.shard_state_bytes > memory_budget {
         return Err(NodeError::InvalidConfig(format!(
             "assigned V3 shard requires {} bytes but worker budget is {} bytes",
-            start.shard_state_bytes, node.config.training_memory_bytes
+            start.shard_state_bytes, memory_budget
         )));
     }
     Message::Training(TrainingMessage::Start(start.clone()))

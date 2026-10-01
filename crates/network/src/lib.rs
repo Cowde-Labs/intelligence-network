@@ -49,6 +49,7 @@ use tokio::{
 };
 
 const CONNECTION_QUEUE: usize = 128;
+const MAX_ADDRESS_RETRY_SECS: u64 = 30;
 const PEER_TTL_SECONDS: u64 = 300;
 const HELLO_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_LEARNED_PEERS: usize = 2048;
@@ -1244,8 +1245,10 @@ impl NetworkHandle {
                         next_attempt: 0,
                     });
                     state.failures = state.failures.saturating_add(1).min(8);
-                    state.next_attempt =
-                        now_secs().saturating_add(2u64.saturating_pow(state.failures).min(300));
+                    state.next_attempt = now_secs().saturating_add(
+                        2u64.saturating_pow(state.failures)
+                            .min(MAX_ADDRESS_RETRY_SECS),
+                    );
                     tracing::debug!(address = %parsed, error = %error, retry_after = state.next_attempt, "outbound peer connection failed");
                 }
             }

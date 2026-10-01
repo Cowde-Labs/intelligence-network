@@ -28,6 +28,10 @@ peer_ttl_seconds = 300
 # V3 reference-training local state budget. Workers need only their assigned
 # shard, not the complete model state, to fit this budget.
 training_memory_bytes = 67108864
+# Optional compute capacity ceilings in bytes; unset uses detected availability.
+# A value of 0 disables sharing on that backend. These are planner budgets, not OS memory reservations.
+# shared_ram_bytes = 1073741824
+# shared_vram_bytes = 2147483648
 # Bounded straggler injection for controlled experiments; keep zero in normal operation.
 training_window_delay_ms = 0
 

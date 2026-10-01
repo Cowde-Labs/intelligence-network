@@ -133,3 +133,82 @@ async fn two_nodes_bind_identity_over_encrypted_transport() {
     let _ = fs::remove_dir_all(root_a);
     let _ = fs::remove_dir_all(root_b);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn bootstrap_restart_is_reconnected_by_maintenance() {
+    let address_a = free_addr();
+    let address_b = free_addr();
+    let root_a = root("maintenance-a");
+    let root_b = root("maintenance-b");
+    let (events_a_tx, mut events_a) = mpsc::channel(64);
+    let (events_b_tx, mut events_b) = mpsc::channel(64);
+    let config_a = NetworkConfig {
+        listen_addr: address_a,
+        advertise_addr: address_a.to_string(),
+        ..NetworkConfig::default()
+    };
+    let config_b = NetworkConfig {
+        listen_addr: address_b,
+        advertise_addr: address_b.to_string(),
+        bootstrap: vec![address_a.to_string()],
+        ..NetworkConfig::default()
+    };
+    let node_a = start(
+        config_a.clone(),
+        Identity::load_or_generate(root_a.join("identity.key")).unwrap(),
+        LocalStore::open(root_a.join("state"), 16 * 1024 * 1024, 1024 * 1024).unwrap(),
+        events_a_tx.clone(),
+    )
+    .await
+    .unwrap();
+    let node_b = start(
+        config_b,
+        Identity::load_or_generate(root_b.join("identity.key")).unwrap(),
+        LocalStore::open(root_b.join("state"), 16 * 1024 * 1024, 1024 * 1024).unwrap(),
+        events_b_tx,
+    )
+    .await
+    .unwrap();
+    wait_connected(&mut events_a).await;
+    wait_connected(&mut events_b).await;
+    let node_a_id = node_a.node_id();
+
+    node_a.shutdown().await;
+    drop(node_a);
+    timeout(Duration::from_secs(5), async {
+        loop {
+            if matches!(events_b.recv().await, Some(NetworkEvent::PeerDisconnected(peer)) if peer == node_a_id) {
+                break;
+            }
+        }
+    })
+    .await
+    .expect("disconnect event after bootstrap shutdown");
+    sleep(Duration::from_millis(3_500)).await;
+
+    let node_a = start(
+        config_a,
+        Identity::load_or_generate(root_a.join("identity.key")).unwrap(),
+        LocalStore::open(root_a.join("state"), 16 * 1024 * 1024, 1024 * 1024).unwrap(),
+        events_a_tx,
+    )
+    .await
+    .expect("restart bootstrap on the same address");
+    timeout(Duration::from_secs(12), async {
+        loop {
+            if matches!(events_b.recv().await, Some(NetworkEvent::PeerConnected(peer)) if peer.node_id == node_a_id) {
+                break;
+            }
+        }
+    })
+    .await
+    .expect("maintenance reconnect after bootstrap restart");
+    assert_eq!(node_a.connected_peers().await, 1);
+    assert_eq!(node_b.connected_peers().await, 1);
+
+    node_a.shutdown().await;
+    node_b.shutdown().await;
+    sleep(Duration::from_millis(100)).await;
+    let _ = fs::remove_dir_all(root_a);
+    let _ = fs::remove_dir_all(root_b);
+}

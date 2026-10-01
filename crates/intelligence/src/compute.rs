@@ -83,6 +83,14 @@ pub enum ComputeError {
     Overflow,
 }
 
+fn apply_memory_share(available_bytes: u64, shared_bytes: Option<u64>) -> (u64, bool) {
+    match shared_bytes {
+        Some(0) => (1, false),
+        Some(limit) => (available_bytes.min(limit).max(1), true),
+        None => (available_bytes.max(1), true),
+    }
+}
+
 pub trait ComputeBackend: Send {
     fn kind(&self) -> BackendKind;
     fn capabilities(&self) -> BackendCapabilities;
@@ -211,15 +219,17 @@ struct CpuBackend {
 }
 
 impl CpuBackend {
-    fn new() -> Self {
-        let memory = host_available_memory();
+    fn new(shared_memory_bytes: Option<u64>) -> Self {
+        let device_memory = host_available_memory();
+        let (available_memory, sharing_enabled) =
+            apply_memory_share(device_memory, shared_memory_bytes);
         Self {
             capabilities: BackendCapabilities {
                 kind: BackendKind::Cpu,
                 runtime_version: "native-reference-1".to_string(),
                 device_count: 1,
-                device_memory_bytes: memory,
-                available_memory_bytes: memory,
+                device_memory_bytes: device_memory,
+                available_memory_bytes: available_memory,
                 formats: vec![NumericFormat::F32],
                 max_tensor_elements: MAX_TASK_ELEMENTS,
                 features: vec![
@@ -230,12 +240,16 @@ impl CpuBackend {
                 ],
                 device_architecture: Some(std::env::consts::ARCH.to_string()),
                 driver_available: true,
-                runtime_available: true,
+                runtime_available: sharing_enabled,
                 peer_to_peer: false,
                 unified_memory: true,
                 max_concurrent_tasks: 2,
                 safety_margin_permille: 100,
-                health: BackendHealth::Ready,
+                health: if sharing_enabled {
+                    BackendHealth::Ready
+                } else {
+                    BackendHealth::Unavailable
+                },
                 physical_verified: true,
                 observed_successes: 0,
                 observed_failures: 0,
@@ -1132,7 +1146,12 @@ struct OptionalAcceleratorBackend {
 
 #[cfg(any(feature = "cuda", feature = "rocm", feature = "metal"))]
 impl OptionalAcceleratorBackend {
-    fn new(kind: BackendKind, runtime_available: bool, runtime_version: &str) -> Self {
+    fn new(
+        kind: BackendKind,
+        runtime_available: bool,
+        runtime_version: &str,
+        shared_memory_bytes: Option<u64>,
+    ) -> Self {
         let emulate = std::env::var_os("INTELLIGENCE_V5_EMULATE_ACCELERATORS").is_some();
         #[cfg(all(feature = "cuda", target_os = "linux"))]
         let native_cuda = if kind == BackendKind::Cuda && runtime_available {
@@ -1162,21 +1181,23 @@ impl OptionalAcceleratorBackend {
         // advertised only after the bounded native PTX challenge succeeds;
         // other accelerator families remain explicit emulation/build
         // boundaries until their native runtime is available.
-        let ready = native_ready || emulate;
-        let available = if native_ready {
+        let device_memory = if native_ready {
             native_memory
         } else if emulate {
             512 * 1024 * 1024
         } else {
             1
         };
+        let (available_memory, sharing_enabled) =
+            apply_memory_share(device_memory, shared_memory_bytes);
+        let ready = (native_ready || emulate) && sharing_enabled;
         Self {
             capabilities: BackendCapabilities {
                 kind,
                 runtime_version: runtime_version.to_string(),
                 device_count: 1,
-                device_memory_bytes: available,
-                available_memory_bytes: available,
+                device_memory_bytes: device_memory,
+                available_memory_bytes: available_memory,
                 formats: vec![NumericFormat::F32],
                 max_tensor_elements: MAX_TASK_ELEMENTS,
                 features: vec![
@@ -1303,7 +1324,7 @@ impl ComputeBackend for OptionalAcceleratorBackend {
         // Portable feature builds deliberately use the same checked reference
         // operation while the native runtime adapter is unavailable.  This is
         // an explicit emulation path and never marks physical verification.
-        let mut cpu = CpuBackend::new();
+        let mut cpu = CpuBackend::new(None);
         // Keep the emulation execution inside the same validated task boundary
         // while replacing only the local backend selector.  The original task
         // remains the caller's CUDA/ROCm/Metal contract; the reference CPU
@@ -1357,18 +1378,27 @@ impl std::fmt::Debug for BackendRegistry {
 
 impl BackendRegistry {
     pub fn discover() -> Self {
+        Self::discover_with_memory_shares(None, None)
+    }
+
+    pub fn discover_with_memory_shares(
+        shared_ram_bytes: Option<u64>,
+        shared_vram_bytes: Option<u64>,
+    ) -> Self {
+        let _ = shared_vram_bytes;
         let mut registry = Self {
             backends: HashMap::new(),
             evidence: HashMap::new(),
             health_overrides: HashMap::new(),
         };
-        registry.register(Box::new(CpuBackend::new()));
+        registry.register(Box::new(CpuBackend::new(shared_ram_bytes)));
         #[cfg(feature = "cuda")]
         registry.register(Box::new(OptionalAcceleratorBackend::new(
             BackendKind::Cuda,
             std::path::Path::new("/dev/nvidiactl").exists()
                 || std::path::Path::new("/usr/lib/libcuda.so.1").exists(),
             "cuda-driver-dynamic",
+            shared_vram_bytes,
         )));
         #[cfg(feature = "rocm")]
         registry.register(Box::new(OptionalAcceleratorBackend::new(
@@ -1377,12 +1407,14 @@ impl BackendRegistry {
                 && (std::path::Path::new("/opt/rocm").exists()
                     || std::path::Path::new("/usr/lib/libamdhip64.so").exists()),
             "rocm-hip-dynamic",
+            shared_vram_bytes,
         )));
         #[cfg(feature = "metal")]
         registry.register(Box::new(OptionalAcceleratorBackend::new(
             BackendKind::Metal,
             cfg!(target_os = "macos"),
             "metal-system",
+            shared_vram_bytes,
         )));
         registry
     }
@@ -1799,6 +1831,47 @@ mod tests {
     use super::*;
     use intelligence_protocol::{BackendHealth, ComputeFeature, JobId, NodeId};
 
+    #[test]
+    fn ram_share_caps_advertised_cpu_capacity() {
+        let shared_ram = 128 * 1024 * 1024;
+        let registry = BackendRegistry::discover_with_memory_shares(Some(shared_ram), None);
+        let cpu = registry
+            .capabilities()
+            .into_iter()
+            .find(|capability| capability.kind == BackendKind::Cpu)
+            .expect("CPU backend");
+
+        assert_eq!(
+            cpu.available_memory_bytes,
+            cpu.device_memory_bytes.min(shared_ram)
+        );
+        assert!(cpu.runtime_available);
+    }
+
+    #[test]
+    fn zero_ram_share_disables_cpu_advertisement() {
+        let registry = BackendRegistry::discover_with_memory_shares(Some(0), None);
+
+        assert!(
+            registry
+                .advertised_capabilities()
+                .iter()
+                .all(|capability| capability.kind != BackendKind::Cpu)
+        );
+    }
+
+    #[test]
+    fn vram_share_is_capped_and_zero_disables_backend() {
+        assert_eq!(
+            apply_memory_share(8 * 1024 * 1024 * 1024, Some(2 * 1024 * 1024 * 1024)),
+            (2 * 1024 * 1024 * 1024, true)
+        );
+        assert_eq!(
+            apply_memory_share(8 * 1024 * 1024 * 1024, Some(0)),
+            (1, false)
+        );
+    }
+
     struct FalseCapabilityBackend {
         capabilities: BackendCapabilities,
     }
@@ -2063,7 +2136,7 @@ mod tests {
 
     #[test]
     fn cpu_backend_boundary_overhead_is_bounded() {
-        let mut direct = CpuBackend::new();
+        let mut direct = CpuBackend::new(None);
         let direct_task = task(BackendKind::Cpu);
         let direct_input = [
             ComputeInput {

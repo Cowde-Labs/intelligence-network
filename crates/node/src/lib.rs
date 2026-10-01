@@ -347,6 +347,12 @@ pub struct NodeConfig {
     pub dht_alpha: usize,
     #[serde(default = "default_dht_max_records")]
     pub dht_max_records: usize,
+    /// Optional cap on RAM offered to distributed compute; zero disables CPU compute sharing.
+    #[serde(default)]
+    pub shared_ram_bytes: Option<u64>,
+    /// Optional cap on VRAM offered to accelerator compute; zero disables accelerator sharing.
+    #[serde(default)]
+    pub shared_vram_bytes: Option<u64>,
     /// Local budget for materialized training state.  V3 workers must fit
     /// their assigned shard, not the complete model state, in this budget.
     #[serde(default = "default_training_memory_bytes")]
@@ -387,6 +393,8 @@ impl Default for NodeConfig {
             dht_k: 20,
             dht_alpha: 3,
             dht_max_records: 2_048,
+            shared_ram_bytes: None,
+            shared_vram_bytes: None,
             training_memory_bytes: DEFAULT_TRAINING_MEMORY_BYTES,
             training_window_delay_ms: 0,
             storage: StorageConfig::default(),
@@ -466,6 +474,10 @@ impl NodeConfig {
         }
         if self.training_memory_bytes == 0
             || self.training_memory_bytes > (1 << 40)
+            || self.shared_ram_bytes.is_some_and(|value| value > (1 << 40))
+            || self
+                .shared_vram_bytes
+                .is_some_and(|value| value > (1 << 40))
             || self.training_window_delay_ms > 30_000
         {
             return Err(NodeError::InvalidConfig(
@@ -536,6 +548,13 @@ impl NodeConfig {
             .collect()
     }
 
+    pub(crate) fn effective_training_memory_bytes(&self) -> u64 {
+        self.shared_ram_bytes
+            .map_or(self.training_memory_bytes, |shared| {
+                self.training_memory_bytes.min(shared)
+            })
+    }
+
     pub fn to_toml(&self) -> Result<String, NodeError> {
         toml::to_string_pretty(self).map_err(|error| NodeError::ConfigParse {
             path: PathBuf::from("<memory>"),
@@ -544,6 +563,12 @@ impl NodeConfig {
     }
 
     fn apply_environment(&mut self) -> Result<(), NodeError> {
+        if let Ok(value) = std::env::var("INTELLIGENCE_SHARED_RAM_BYTES") {
+            self.shared_ram_bytes = Some(parse_env("INTELLIGENCE_SHARED_RAM_BYTES", &value)?);
+        }
+        if let Ok(value) = std::env::var("INTELLIGENCE_SHARED_VRAM_BYTES") {
+            self.shared_vram_bytes = Some(parse_env("INTELLIGENCE_SHARED_VRAM_BYTES", &value)?);
+        }
         if let Ok(value) = std::env::var("INTELLIGENCE_DATA_DIR") {
             self.data_dir = PathBuf::from(value);
         }
@@ -1210,12 +1235,22 @@ impl Node {
             Ok(None) => LocalSecurityState::new(identity.node_id(), SecurityPolicy::default())?,
         };
         let (event_tx, event_rx) = mpsc::channel(256);
-        let compute = Arc::new(Mutex::new(BackendRegistry::discover()));
+        let compute = Arc::new(Mutex::new(BackendRegistry::discover_with_memory_shares(
+            config.shared_ram_bytes,
+            config.shared_vram_bytes,
+        )));
         let local_backend_capabilities = compute.lock().await.advertised_capabilities();
         let mut public_capabilities = config.public_capabilities();
+        if config.shared_ram_bytes == Some(0) {
+            public_capabilities.retain(|capability| capability.name != "training.reference");
+        }
         for capability in &mut public_capabilities {
             if capability.name == "training.reference" {
                 capability.compute_backends = local_backend_capabilities.clone();
+                if let Some(shared_ram) = config.shared_ram_bytes {
+                    capability.resources.memory_bytes =
+                        capability.resources.memory_bytes.min(shared_ram);
+                }
             }
         }
         if config.relay_enabled {
@@ -1428,6 +1463,8 @@ impl Node {
             "job_states": state_counts,
             "storage_used_bytes": self.store.used_bytes()?,
             "storage_quota_bytes": self.store.quota_bytes(),
+            "shared_ram_bytes": self.config.shared_ram_bytes,
+            "shared_vram_bytes": self.config.shared_vram_bytes,
             "process_memory_bytes": process_memory_bytes(),
             "process_cpu_time_ms": process_cpu_time_ms(),
             "network": network,
@@ -1587,11 +1624,13 @@ impl Node {
                 );
                 object.insert(
                     "training_memory_bytes".to_string(),
-                    serde_json::json!(self.config.training_memory_bytes),
+                    serde_json::json!(self.config.effective_training_memory_bytes()),
                 );
                 object.insert(
                     "model_requires_sharding".to_string(),
-                    serde_json::json!(start.model_state_bytes > self.config.training_memory_bytes),
+                    serde_json::json!(
+                        start.model_state_bytes > self.config.effective_training_memory_bytes()
+                    ),
                 );
             }
         }
@@ -4912,17 +4951,22 @@ fn default_cpu_limit() -> u64 {
     1000
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 mod tests {
+    use super::NodeConfig;
+    #[cfg(unix)]
     use super::admin_socket_path;
+    #[cfg(unix)]
     use std::path::Path;
 
+    #[cfg(unix)]
     #[test]
     fn admin_socket_path_keeps_short_paths() {
         let short = Path::new("/tmp/node.sock");
         assert_eq!(admin_socket_path(short), short);
     }
 
+    #[cfg(unix)]
     #[test]
     fn admin_socket_path_falls_back_for_long_paths() {
         let long_string = format!("/{}/node.sock", "a".repeat(140));
@@ -4934,5 +4978,22 @@ mod tests {
         assert!(resolved_str.starts_with("/tmp/intelligence-"));
         assert!(resolved_str.ends_with(".sock"));
         assert_eq!(resolved, admin_socket_path(long));
+    }
+
+    #[test]
+    fn memory_share_settings_round_trip_and_bound_training_budget() {
+        let config = NodeConfig {
+            shared_ram_bytes: Some(32 * 1024 * 1024),
+            shared_vram_bytes: Some(2 * 1024 * 1024 * 1024),
+            ..NodeConfig::default()
+        };
+        config.validate().unwrap();
+
+        let encoded = config.to_toml().unwrap();
+        let decoded: NodeConfig = toml::from_str(&encoded).unwrap();
+
+        assert_eq!(decoded.shared_ram_bytes, config.shared_ram_bytes);
+        assert_eq!(decoded.shared_vram_bytes, config.shared_vram_bytes);
+        assert_eq!(decoded.effective_training_memory_bytes(), 32 * 1024 * 1024);
     }
 }

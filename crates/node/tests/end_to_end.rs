@@ -194,6 +194,8 @@ fn config(
         dht_k: 20,
         dht_alpha: 3,
         dht_max_records: 2_048,
+        shared_ram_bytes: None,
+        shared_vram_bytes: None,
         // The V3 fixture advertises a 2 KiB complete model and 1 KiB
         // assigned shard.  Keeping the worker budget at 1.5 KiB makes the
         // model-fit acceptance condition observable in every real-process
