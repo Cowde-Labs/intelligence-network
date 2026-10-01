@@ -1,5 +1,7 @@
 # Intelligence Network
 
+[English](README.md) | [Português (Brasil)](README.pt-BR.md) | [简体中文](README.zh-CN.md) | [Español](README.es.md)
+
 Run AI across independent machines without one central server controlling the network.
 
 ```bash
@@ -438,6 +440,17 @@ Be clear-eyed about where this is:
   long-running deployments.
 
 Report vulnerabilities privately to the maintainers before publishing.
+
+## Known open problems
+
+The following are gaps identified in the current repository, not implemented features:
+
+- Build a trustworthy local resource profile and adaptive contribution budget that account for container limits, system load, available memory, energy, and temperature.
+- Make scheduling compare compute cost, per-shard memory, latency, bandwidth, data transfer, and observed reliability.
+- Replace insufficient hardware declarations with fresh, explainable observations without exposing sensitive local details.
+- Expand real accelerator execution and clearly distinguish backend discovery/advertising from production kernels.
+- Validate security, connectivity, and failure behavior across more operating systems, networks, and heterogeneous hardware.
+- Prepare opportunistic mobile participation without assuming continuous background execution.
 
 ## Development
 
