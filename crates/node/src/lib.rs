@@ -4898,26 +4898,6 @@ fn default_training_memory_bytes() -> u64 {
     DEFAULT_TRAINING_MEMORY_BYTES
 }
 
-#[cfg(test)]
-mod resource_share_config_tests {
-    use super::*;
-
-    #[test]
-    fn memory_share_settings_round_trip_and_bound_training_budget() {
-        let mut config = NodeConfig::default();
-        config.shared_ram_bytes = Some(32 * 1024 * 1024);
-        config.shared_vram_bytes = Some(2 * 1024 * 1024 * 1024);
-        config.validate().unwrap();
-
-        let encoded = config.to_toml().unwrap();
-        let decoded: NodeConfig = toml::from_str(&encoded).unwrap();
-
-        assert_eq!(decoded.shared_ram_bytes, config.shared_ram_bytes);
-        assert_eq!(decoded.shared_vram_bytes, config.shared_vram_bytes);
-        assert_eq!(decoded.effective_training_memory_bytes(), 32 * 1024 * 1024);
-    }
-}
-
 fn relay_capability(expires_at: u64) -> Capability {
     Capability {
         name: "network.relay".to_string(),
@@ -4971,17 +4951,22 @@ fn default_cpu_limit() -> u64 {
     1000
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 mod tests {
+    use super::NodeConfig;
+    #[cfg(unix)]
     use super::admin_socket_path;
+    #[cfg(unix)]
     use std::path::Path;
 
+    #[cfg(unix)]
     #[test]
     fn admin_socket_path_keeps_short_paths() {
         let short = Path::new("/tmp/node.sock");
         assert_eq!(admin_socket_path(short), short);
     }
 
+    #[cfg(unix)]
     #[test]
     fn admin_socket_path_falls_back_for_long_paths() {
         let long_string = format!("/{}/node.sock", "a".repeat(140));
@@ -4993,5 +4978,22 @@ mod tests {
         assert!(resolved_str.starts_with("/tmp/intelligence-"));
         assert!(resolved_str.ends_with(".sock"));
         assert_eq!(resolved, admin_socket_path(long));
+    }
+
+    #[test]
+    fn memory_share_settings_round_trip_and_bound_training_budget() {
+        let config = NodeConfig {
+            shared_ram_bytes: Some(32 * 1024 * 1024),
+            shared_vram_bytes: Some(2 * 1024 * 1024 * 1024),
+            ..NodeConfig::default()
+        };
+        config.validate().unwrap();
+
+        let encoded = config.to_toml().unwrap();
+        let decoded: NodeConfig = toml::from_str(&encoded).unwrap();
+
+        assert_eq!(decoded.shared_ram_bytes, config.shared_ram_bytes);
+        assert_eq!(decoded.shared_vram_bytes, config.shared_vram_bytes);
+        assert_eq!(decoded.effective_training_memory_bytes(), 32 * 1024 * 1024);
     }
 }

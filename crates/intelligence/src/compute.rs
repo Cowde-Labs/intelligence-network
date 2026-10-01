@@ -91,52 +91,6 @@ fn apply_memory_share(available_bytes: u64, shared_bytes: Option<u64>) -> (u64, 
     }
 }
 
-#[cfg(test)]
-mod memory_share_tests {
-    use super::*;
-
-    #[test]
-    fn ram_share_caps_advertised_cpu_capacity() {
-        let shared_ram = 128 * 1024 * 1024;
-        let registry = BackendRegistry::discover_with_memory_shares(Some(shared_ram), None);
-        let cpu = registry
-            .capabilities()
-            .into_iter()
-            .find(|capability| capability.kind == BackendKind::Cpu)
-            .expect("CPU backend");
-
-        assert_eq!(
-            cpu.available_memory_bytes,
-            cpu.device_memory_bytes.min(shared_ram)
-        );
-        assert!(cpu.runtime_available);
-    }
-
-    #[test]
-    fn zero_ram_share_disables_cpu_advertisement() {
-        let registry = BackendRegistry::discover_with_memory_shares(Some(0), None);
-
-        assert!(
-            registry
-                .advertised_capabilities()
-                .iter()
-                .all(|capability| capability.kind != BackendKind::Cpu)
-        );
-    }
-
-    #[test]
-    fn vram_share_is_capped_and_zero_disables_backend() {
-        assert_eq!(
-            apply_memory_share(8 * 1024 * 1024 * 1024, Some(2 * 1024 * 1024 * 1024)),
-            (2 * 1024 * 1024 * 1024, true)
-        );
-        assert_eq!(
-            apply_memory_share(8 * 1024 * 1024 * 1024, Some(0)),
-            (1, false)
-        );
-    }
-}
-
 pub trait ComputeBackend: Send {
     fn kind(&self) -> BackendKind;
     fn capabilities(&self) -> BackendCapabilities;
@@ -1876,6 +1830,47 @@ pub fn new_challenge(
 mod tests {
     use super::*;
     use intelligence_protocol::{BackendHealth, ComputeFeature, JobId, NodeId};
+
+    #[test]
+    fn ram_share_caps_advertised_cpu_capacity() {
+        let shared_ram = 128 * 1024 * 1024;
+        let registry = BackendRegistry::discover_with_memory_shares(Some(shared_ram), None);
+        let cpu = registry
+            .capabilities()
+            .into_iter()
+            .find(|capability| capability.kind == BackendKind::Cpu)
+            .expect("CPU backend");
+
+        assert_eq!(
+            cpu.available_memory_bytes,
+            cpu.device_memory_bytes.min(shared_ram)
+        );
+        assert!(cpu.runtime_available);
+    }
+
+    #[test]
+    fn zero_ram_share_disables_cpu_advertisement() {
+        let registry = BackendRegistry::discover_with_memory_shares(Some(0), None);
+
+        assert!(
+            registry
+                .advertised_capabilities()
+                .iter()
+                .all(|capability| capability.kind != BackendKind::Cpu)
+        );
+    }
+
+    #[test]
+    fn vram_share_is_capped_and_zero_disables_backend() {
+        assert_eq!(
+            apply_memory_share(8 * 1024 * 1024 * 1024, Some(2 * 1024 * 1024 * 1024)),
+            (2 * 1024 * 1024 * 1024, true)
+        );
+        assert_eq!(
+            apply_memory_share(8 * 1024 * 1024 * 1024, Some(0)),
+            (1, false)
+        );
+    }
 
     struct FalseCapabilityBackend {
         capabilities: BackendCapabilities,
