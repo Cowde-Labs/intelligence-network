@@ -1,3 +1,5 @@
+
+Outbound bootstrap and known peer addresses are retried periodically with exponential backoff capped at 30 seconds. This recovers from temporary peer outages, but cannot guarantee connectivity through a blocked firewall, restrictive NAT, or internet outage.
 # Intelligence Network
 
 [English](README.md) | [Português (Brasil)](README.pt-BR.md) | [简体中文](README.zh-CN.md) | [Español](README.es.md)
@@ -153,6 +155,10 @@ irm https://raw.githubusercontent.com/Cowde-Labs/intelligence-network/main/insta
 Pin a version with `INTELLIGENCE_VERSION=v1.0.0`, or mirror the artifacts and
 set `INTELLIGENCE_RELEASE_BASE_URL`. The script refuses to install on a
 checksum mismatch or an archive with unsafe paths.
+
+### Debian, Ubuntu and Mint package
+
+Download `intelligence-network_1.0.0_amd64.deb` (or the `arm64` package) from the release artifacts, then install it with `sudo apt install ./intelligence-network_1.0.0_amd64.deb`. Run `intelligence up` afterward. The package installs the binary under `/usr/bin`; it does not start or enable a service automatically.
 
 ### From source
 
@@ -359,6 +365,8 @@ fail integrity checks are quarantined, not deleted.
 **Runtime.** `[runtime] max_queued_jobs`, `max_concurrent_jobs`,
 `max_input_bytes`, `max_output_bytes`, `default_timeout_ms`,
 `process_memory_bytes`, `process_cpu_seconds`, `work_dir`.
+
+**Shared compute.** `shared_ram_bytes` and `shared_vram_bytes` are byte ceilings for the capacity advertised to distributed compute; when unset, detected availability is used. A value of `0` disables that backend. The RAM ceiling also caps the worker training-shard budget. These are scheduler capacity limits, not OS memory reservations or a hard cap on total node RSS. VRAM is advertised only when a compatible accelerator backend is enabled in the build.
 
 **Capabilities.** Each `[[capabilities]]` entry has a `kind` of
 `builtin_text`, `builtin_training`, `process` or `llama_cpp`, a `sandbox` of

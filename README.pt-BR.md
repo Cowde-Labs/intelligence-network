@@ -1,3 +1,4 @@
+As cotas de compute também podem ser definidas por `INTELLIGENCE_SHARED_RAM_BYTES` e `INTELLIGENCE_SHARED_VRAM_BYTES`.
 # Intelligence Network
 
 [English](README.md) | **Português (Brasil)** | [简体中文](README.zh-CN.md) | [Español](README.es.md)
@@ -97,6 +98,10 @@ irm https://raw.githubusercontent.com/Cowde-Labs/intelligence-network/main/insta
 ```
 
 Fixe uma versão com `INTELLIGENCE_VERSION=v1.0.0`, ou espelhe os artefatos e configure `INTELLIGENCE_RELEASE_BASE_URL`. O script recusa checksums incorretos e arquivos compactados com caminhos inseguros.
+
+### Pacote Debian, Ubuntu e Mint
+
+Baixe o pacote `intelligence-network_1.0.0_amd64.deb` (ou `arm64` em ARM64) nos artefatos da release e instale com `sudo apt install ./intelligence-network_1.0.0_amd64.deb`. Depois execute `intelligence up`. O pacote instala o binário em `/usr/bin` e não inicia nem habilita um serviço automaticamente.
 
 ### Compilar do código-fonte
 
@@ -251,7 +256,7 @@ As opções globais são `--config <path>` (ou `INTELLIGENCE_CONFIG`) e `--json`
 
 `intelligence config` imprime a configuração efetiva. Cada campo pode ser definido em TOML ou substituído por uma variável `INTELLIGENCE_*`, como `INTELLIGENCE_LISTEN_ADDR`, `INTELLIGENCE_BOOTSTRAP`, `INTELLIGENCE_STORAGE_QUOTA_BYTES` e `INTELLIGENCE_RUNTIME_MAX_CONCURRENT_JOBS`. Há um exemplo comentado em [`config/node.toml.example`](config/node.toml.example).
 
-**Rede:** `listen_addr`, `advertise_addr`, `bootstrap`, `allow_private_addresses`, `max_connections` e `peer_ttl_seconds`. Hole punching é habilitado por padrão e tem tentativas finitas; não há garantia contra NATs hostis.
+**Rede:** `listen_addr`, `advertise_addr`, `bootstrap`, `allow_private_addresses`, `max_connections` e `peer_ttl_seconds`. Hole punching é habilitado por padrão. Endereços conhecidos são reavaliados periodicamente e falhas usam backoff com intervalo máximo de 30 segundos; isso ajuda a recuperar conexões, mas não supera bloqueios de firewall, NAT ou indisponibilidade da internet.
 
 **Relays:** qualquer nó pode operar como relay. Configure `relay_enabled`, `relay_max_sessions` e `relay_max_bytes`; clientes podem listar `relay_addresses` e definir `prefer_relay`. Relays encaminham envelopes autenticados opacos, sem ler jobs nem se tornar autoridades.
 
@@ -260,6 +265,8 @@ As opções globais são `--config <path>` (ou `INTELLIGENCE_CONFIG`) e `--json`
 **Armazenamento:** `[storage] quota_bytes` e `max_artifact_bytes`. Artefatos que falham na verificação de integridade são colocados em quarentena, não apagados.
 
 **Runtime:** `[runtime] max_queued_jobs`, `max_concurrent_jobs`, `max_input_bytes`, `max_output_bytes`, `default_timeout_ms`, `process_memory_bytes`, `process_cpu_seconds` e `work_dir`.
+
+**Compute compartilhado:** `shared_ram_bytes` e `shared_vram_bytes` definem tetos em bytes para a capacidade de compute anunciada; sem valor, o nó usa a disponibilidade detectada. `0` desativa o backend correspondente. A RAM compartilhada também limita a memória de shard de treinamento. Esses valores limitam o que o planejador oferece, mas não reservam memória do sistema operacional nem impõem um teto ao RSS total do nó. VRAM só é anunciada quando há acelerador compatível habilitado no build.
 
 **Capabilities:** cada `[[capabilities]]` usa `builtin_text`, `builtin_training`, `process` ou `llama_cpp`, sandbox `trusted_local` ou `bubblewrap`, limites individuais e flags `public`/`accept_remote_jobs`. Metadados são incluídos em anúncios assinados e usados no planejamento; são declarações, avaliadas junto com as evidências observadas.
 

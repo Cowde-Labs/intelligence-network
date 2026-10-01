@@ -37,7 +37,16 @@ jobs:
         env:
           INTELLIGENCE_COMMIT: ${{ github.sha }}
         shell: bash
-        run: ./scripts/release.sh "${{ matrix.target }}" dist
+        run: |
+          if [[ "${{ matrix.target }}" == *linux* ]]; then
+            docker run --rm --user "$(id -u):$(id -g)" \
+              -e CARGO_TARGET_DIR=/workspace/.cache/rust-target \
+              -e INTELLIGENCE_COMMIT="$INTELLIGENCE_COMMIT" \
+              -v "$PWD":/workspace -w /workspace rust:1.88-bullseye \
+              ./scripts/release.sh "${{ matrix.target }}" dist
+          else
+            ./scripts/release.sh "${{ matrix.target }}" dist
+          fi
       - name: Upload package
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
@@ -45,6 +54,8 @@ jobs:
           path: |
             dist/*.tar.gz
             dist/*.tar.gz.sha256
+            dist/*.deb
+            dist/*.deb.sha256
             dist/*.zip
             dist/*.zip.sha256
 
@@ -63,5 +74,7 @@ jobs:
           files: |
             dist/**/*.tar.gz
             dist/**/*.tar.gz.sha256
+            dist/**/*.deb
+            dist/**/*.deb.sha256
             dist/**/*.zip
             dist/**/*.zip.sha256

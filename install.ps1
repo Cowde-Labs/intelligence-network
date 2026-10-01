@@ -53,6 +53,9 @@ try {
     $installDir = Join-Path $env:LOCALAPPDATA 'Programs\intelligence'
     New-Item -ItemType Directory -Path $installDir -Force | Out-Null
     Copy-Item $exe (Join-Path $installDir 'intelligence.exe') -Force
+    Get-ChildItem -Path $packageDir -Filter '*.dll' -File | ForEach-Object {
+        Copy-Item $_.FullName $installDir -Force
+    }
 
     $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
     if (($userPath -split ';') -notcontains $installDir) {
